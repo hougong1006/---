@@ -11,6 +11,7 @@
 - `ros2_ws/src/dofbot_pro_description`：运动学求解使用的机械臂URDF模型。
 - `qt_arm_monitor`：基于PyQt5的设备控制与可视化监控界面。
 - `scripts`：设备一键启动、停止、GPIO配置和运行监控脚本。
+- `joint_self_test`：独立的六关节通信、运动与自动归位自检工具。
 
 第三方Orbbec相机ROS驱动、Ultralytics及系统依赖不重复提交到本仓库，应在Jetson设备上单独安装。
 
@@ -38,6 +39,15 @@ source ~/dofbot_pro_ws/install/setup.bash
 bash ~/start_sorting.sh
 bash ~/stop_sorting.sh
 ```
+
+六关节自检应在分拣系统停止后单独运行：
+
+```bash
+bash ~/joint_self_test/start_joint_test.sh
+bash ~/joint_self_test/stop_joint_test.sh
+```
+
+自检会逐个驱动六个关节并读取角度，正常完成或安全停止后均返回竖直姿态。详细部署和安全说明见`joint_self_test/README.md`。
 
 ## 本地凭据配置
 
