@@ -1,0 +1,34 @@
+# ROS 2 build outputs
+build/
+install/
+log/
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Application logs and local settings
+*.log
+log.txt
+Log/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary and backup files
+*.bak
+*.bak_*
+*.save
+*~
+
+# Generated intermediate model. The device runtime engine and source weights
+# are retained; ONNX can be regenerated from best.pt when needed.
+*.onnx
+
+# Legacy GBK launch helper is not used by the current one-click startup path.
+ros2_ws/src/dofbot_pro_info/launch/dofbotpro_server_launch.py
