@@ -524,6 +524,8 @@ class ScanLineOverlay(QWidget):
 
 
 class ArmMonitorWindow(QMainWindow):
+    device_offsets_signal = pyqtSignal(float, float, float)
+    device_offsets_error_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -1029,6 +1031,8 @@ class ArmMonitorWindow(QMainWindow):
         self._uptime_timer = QTimer()
         self._uptime_timer.timeout.connect(self._tick_uptime)
         self._uptime_timer.setInterval(1000)
+        self.device_offsets_signal.connect(self._apply_device_offsets)
+        self.device_offsets_error_signal.connect(self._on_device_offsets_error)
 
         self.add_log("[SYS] " + _TX['SYS'])
 
@@ -1235,20 +1239,26 @@ class ArmMonitorWindow(QMainWindow):
                 c.close()
                 cfg = yaml.safe_load(content)
                 if cfg:
-                    ox = cfg.get('x_offset', 0)
-                    oy = cfg.get('y_offset', 0)
-                    oz = cfg.get('z_offset', 0)
-                    # Update UI in main thread via signal-safe setText
-                    self._offset_x = ox
-                    self._offset_y = oy
-                    self._offset_z = oz
-                    self.label_offset_x.setText(f"{ox:.4f}")
-                    self.label_offset_y.setText(f"{oy:.4f}")
-                    self.label_offset_z.setText(f"{oz:.4f}")
-                    self.add_log(f"[SYS] Device offsets: X={ox}, Y={oy}, Z={oz}")
+                    ox = float(cfg.get('x_offset', 0))
+                    oy = float(cfg.get('y_offset', 0))
+                    oz = float(cfg.get('z_offset', 0))
+                    self.device_offsets_signal.emit(ox, oy, oz)
             except Exception as e:
-                self.add_log(f"[SYS] Failed to read offsets: {e}")
+                self.device_offsets_error_signal.emit(str(e))
         threading.Thread(target=_run, daemon=True).start()
+
+    def _apply_device_offsets(self, ox, oy, oz):
+        """Apply values in the Qt main thread after SSH reading completes."""
+        self._offset_x = ox
+        self._offset_y = oy
+        self._offset_z = oz
+        self.label_offset_x.setText(f"{ox:.4f}")
+        self.label_offset_y.setText(f"{oy:.4f}")
+        self.label_offset_z.setText(f"{oz:.4f}")
+        self.add_log(f"[SYS] Device offsets: X={ox}, Y={oy}, Z={oz}")
+
+    def _on_device_offsets_error(self, error):
+        self.add_log(f"[SYS] Failed to read offsets: {error}")
 
     def _conf_dec(self):
         self._conf_value = max(0.05, round(self._conf_value - 0.05, 2))
@@ -1740,7 +1750,10 @@ class ArmMonitorWindow(QMainWindow):
             return  # System stopped — ignore tail log lines
         clean = self._strip_ansi(line)
         self.add_log(clean)
-        self._parse_log_line(clean)
+        try:
+            self._parse_log_line(clean)
+        except Exception as e:
+            self.add_log(f"[UI] Log parse error ignored: {type(e).__name__}: {e}")
 
     def _parse_log_line(self, line):
         """Parse log lines from the actual sorting system and update UI panels.
