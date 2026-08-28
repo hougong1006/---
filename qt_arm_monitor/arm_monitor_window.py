@@ -1782,7 +1782,7 @@ class ArmMonitorWindow(QMainWindow):
         # stopping the conveyor or entering the grasp/sort flow.
         if '[COUNT]' in line:
             m = re.search(r'\[COUNT\]\s+(\S+)', line)
-            if m and m.group(1) in ('biaozhun', 'chengshujinju'):
+            if m and m.group(1) in ('biaozhunketi', 'biaozhun', 'chengshujinju'):
                 self._sort_ripe += 1
                 self._sort_total += 1
                 self.update_detection_stats(
@@ -1795,9 +1795,9 @@ class ArmMonitorWindow(QMainWindow):
             m = re.search(r'分拣: (\S+)\s', line)
             if m:
                 name = m.group(1)
-                if name in ('biaozhun', 'chengshujinju'):
+                if name in ('biaozhunketi', 'biaozhun', 'chengshujinju'):
                     self._sort_ripe += 1
-                elif name in ('quexian', 'fulanjinju'):
+                elif name in ('quexianketi', 'quexian', 'fulanjinju'):
                     self._sort_rotten += 1
                 elif name == 'qingjinju':
                     self._sort_green += 1
@@ -1850,6 +1850,8 @@ class ArmMonitorWindow(QMainWindow):
     def _translate_name(self, raw):
         """Translate YOLO class name to display name."""
         name_map = {
+            'biaozhunketi': '\u6807\u51c6\u4ef6',
+            'quexianketi': '\u7f3a\u9677\u4ef6',
             'biaozhun': '\u6807\u51c6\u4ef6',
             'quexian': '\u7f3a\u9677\u4ef6',
             'chengshujinju': '\u6807\u51c6\u4ef6',

@@ -119,8 +119,8 @@ class Yolov11GraspNode(Node):
         self.play_id = Int8()
         # ===== 分拣物品：3类菌菇（标签顺序: 0=chengshujinju, 1=fulanjinju, 2=qingjinju）=====
         self.sort_items = {
-            'biaozhun': {'joint': [178, 59, 20, 59, 90, 30], 'id': 1},   # 标准件
-            'quexian':    {'joint': [222, 12, 72, 75, 89, 29], 'id': 2},   # 缺陷件
+            'biaozhunketi': {'joint': [178, 59, 20, 59, 90, 30], 'id': 1},  # 标准件
+            'quexianketi': {'joint': [222, 12, 72, 75, 89, 29], 'id': 2},   # 缺陷件
         }
         self.Arm.Arm_serial_servo_write6_array(self.init_joints, 2000)
         print("Current_End_Pose: ", self.CurEndPos)

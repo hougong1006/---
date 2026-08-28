@@ -139,19 +139,19 @@ class Yolov11DetectNode(Node):
                     cv2.putText(annotated_frame, label, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     continue  # Object is not fully inside the frame yet.
 
-                if class_name == 'biaozhun':
+                if class_name == 'biaozhunketi':
                     standard_seen_this_frame = True
                     self.standard_absent_count = 0
                     if not self.standard_count_latched:
                         self.standard_vote_count += 1
                         if self.standard_vote_count >= self.VOTE_THRESHOLD:
-                            self.get_logger().info('[COUNT] biaozhun')
+                            self.get_logger().info('[COUNT] biaozhunketi')
                             self.standard_count_latched = True
                             self.standard_vote_count = 0
                     continue
 
                 # Only defective parts enter voting, stop-belt and grasp flow.
-                if class_name != 'quexian':
+                if class_name != 'quexianketi':
                     continue
 
                 detected_this_frame = True
