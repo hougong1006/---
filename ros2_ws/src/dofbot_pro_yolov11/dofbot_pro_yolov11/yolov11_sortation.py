@@ -462,6 +462,15 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # 节点退出前保持设备安全：先停止传送带，再清理GPIO资源。
+        # 这是stop_sorting.sh独立停止脉冲之外的第二层退出保护。
+        print("[传送带] 分拣节点退出，发送停止信号...")
+        try:
+            yolov11_grasp.send_stop_conveyor()
+            print("[传送带] 退出停止信号已发送")
+        except Exception as e:
+            print(f"[警告] 退出停止信号发送失败: {e}")
+
         # GPIO 清理
         print("[GPIO] 清理 GPIO 资源...")
         GPIO.output(BCM_STOP, GPIO.LOW)

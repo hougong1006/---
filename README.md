@@ -43,6 +43,8 @@ bash ~/start_sorting.sh
 bash ~/stop_sorting.sh
 ```
 
+停止脚本会先通过BCM6向传送带控制板发送50 ms停止脉冲，再终止ROS 2节点。Windows可视化界面的停止按钮同样调用该脚本，因此界面停止和命令行停止具有一致的传送带联停行为。
+
 六关节自检应在分拣系统停止后单独运行：
 
 ```bash

@@ -12,6 +12,31 @@ echo ""
 
 PID_FILE="/tmp/dofbot_sorting_pids.txt"
 
+# 在终止ROS节点前先向传送带控制板发送停止脉冲。
+# 可视化界面的停止按钮和命令行停止都调用本脚本，因此统一在这里处理。
+echo "[0] 发送传送带停止信号 (BCM6, 50 ms)..."
+if python3 - <<'PY'
+import time
+import Jetson.GPIO as GPIO
+
+BCM_STOP = 6
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BCM)
+try:
+    GPIO.setup(BCM_STOP, GPIO.OUT, initial=GPIO.LOW)
+    GPIO.output(BCM_STOP, GPIO.HIGH)
+    time.sleep(0.05)
+    GPIO.output(BCM_STOP, GPIO.LOW)
+finally:
+    GPIO.cleanup(BCM_STOP)
+PY
+then
+    echo "  [传送带] 停止信号已发送"
+else
+    echo "  [警告] 传送带停止信号发送失败，请立即使用硬件急停"
+fi
+echo ""
+
 # 方式1：通过PID文件停止
 if [ -f "$PID_FILE" ] && [ -s "$PID_FILE" ]; then
     echo "[1] 通过PID记录停止进程..."
