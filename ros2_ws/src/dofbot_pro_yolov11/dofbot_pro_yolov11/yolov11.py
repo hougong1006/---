@@ -84,8 +84,12 @@ class Yolov11DetectNode(Node):
         self.VOTE_THRESHOLD = 10     # 至少N帧一致才发布
         self.no_detect_count = 0    # 连续无检测帧计数
         self.MAX_NO_DETECT = 2      # 连续无检测超过此值则清空缓冲区
+        # 只在相机正视区域内进行最终判定。工件从右向左运动，进入或
+        # 离开画面时穿线孔容易因透视和凹槽遮挡产生误判。
+        self.ROI_LEFT = 120
+        self.ROI_RIGHT = 520
         # Standard parts pass through without grasping. Count one part after
-        # three confirmed frames, then wait until it leaves before rearming.
+        # VOTE_THRESHOLD confirmed frames, then wait until it leaves before rearming.
         self.standard_vote_count = 0
         self.standard_count_latched = False
         self.standard_absent_count = 0
@@ -121,6 +125,15 @@ class Yolov11DetectNode(Node):
         boxes = results[0].boxes
         key = cv2.waitKey(10)
 
+        # 在视频流中标出有效判定区，便于现场调整边界。
+        cv2.line(annotated_frame, (self.ROI_LEFT, 0),
+                 (self.ROI_LEFT, 479), (0, 255, 255), 2)
+        cv2.line(annotated_frame, (self.ROI_RIGHT, 0),
+                 (self.ROI_RIGHT, 479), (0, 255, 255), 2)
+        cv2.putText(annotated_frame, "ACTIVE ROI",
+                    (self.ROI_LEFT + 8, 22), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55, (0, 255, 255), 2)
+
         detected_this_frame = False
         standard_seen_this_frame = False
         if boxes != [None] and self.start_flag == True:
@@ -133,11 +146,30 @@ class Yolov11DetectNode(Node):
                 center_x = (x_min + x_max) // 2
                 center_y = (y_min + y_max) // 2
 
-                # 物品从右向左流入，右边缘还没完全进入画面，跳过不发布
-                RIGHT_MARGIN = 60
-                if center_x > (640 - RIGHT_MARGIN):
-                    cv2.putText(annotated_frame, label, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                    continue  # Object is not fully inside the frame yet.
+                # 整个检测框必须位于有效区内。右侧刚进入或左侧即将离开时，
+                # 只显示检测结果，不计数、不投票、不发送抓取坐标。
+                box_in_roi = (x_min >= self.ROI_LEFT and
+                              x_max <= self.ROI_RIGHT)
+                if not box_in_roi:
+                    cv2.putText(annotated_frame, label,
+                                (x_min, max(18, y_min - 10)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (128, 128, 128), 2)
+                    cv2.putText(annotated_frame, "WAIT ROI",
+                                (x_min, max(36, y_min + 12)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (0, 255, 255), 2)
+
+                    # 工件从左侧离开有效区时，丢弃尚未完成的缺陷投票，
+                    # 防止孔洞被凹槽侧壁遮挡后累积成错误抓取指令。
+                    if (class_name == 'quexianketi' and
+                            x_min < self.ROI_LEFT and self.vote_buffer):
+                        self.get_logger().info(
+                            f"[ROI重置] 目标离开左侧有效区，清空缺陷投票"
+                            f"({len(self.vote_buffer)}帧)")
+                        self.vote_buffer = []
+                        self.no_detect_count = 0
+                    continue
 
                 if class_name == 'biaozhunketi':
                     standard_seen_this_frame = True

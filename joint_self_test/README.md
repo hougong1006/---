@@ -13,7 +13,7 @@
 在Windows PowerShell中进入仓库并上传目录：
 
 ```powershell
-scp -r .\joint_self_test jetson@10.229.42.172:/home/jetson/
+scp -r .\joint_self_test jetson@10.182.135.194:/home/jetson/
 ```
 
 登录Jetson并设置脚本权限：

@@ -568,7 +568,10 @@ class ArmMonitorWindow(QMainWindow):
 
         # Load saved IP or use default
         self._settings = QSettings('DofbotPro', 'ArmMonitor')
-        saved_ip = self._settings.value('last_ip', '10.178.59.172')
+        saved_ip = self._settings.value('last_ip', '10.182.135.194')
+        if saved_ip in ('10.229.42.172', '10.178.59.172', '192.168.8.88'):
+            saved_ip = '10.182.135.194'
+            self._settings.setValue('last_ip', saved_ip)
         self.ip_input = QLineEdit(saved_ip)
         self.ip_input.setFont(QFont("Consolas", 9))
         self.ip_input.setFixedWidth(220)
