@@ -48,7 +48,7 @@ def _t(s):
 
 # All Chinese strings decoded at runtime (avoids Windows encoding issues)
 _TX = {
-    'TITLE': _t('5pm65qOA5oqk6IiqLeiIquepuuS4neWgteihqOmdoue8uumZt+WcqOe6v+ajgOa1i+S4juWIhuaLo+ezu+e7n+ebkeaOp+W5s+WPsA=='),
+    'TITLE': _t('5aOz5L2T6KGo6Z2i57y66Zm35pm66IO95YiG5ouj57O757uf5Y+v6KeG5YyW55uR5o6n5bmz5Y+w'),
     'BTN_LAUNCH': _t('5LiA6ZSu5ZCv5Yqo'),
     'BTN_STOP_SYS': _t('5YGc5q2i57O757uf'),
     'LAUNCHING': _t('5ZCv5Yqo5Lit77yM6K+356iN5YCZLi4u'),
