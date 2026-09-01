@@ -1984,8 +1984,9 @@ class ArmMonitorWindow(QMainWindow):
             return
 
         if self._cam_worker and self._cam_worker.isRunning():
-            self.add_log("[VIDEO] The full system video stream is already connected")
-            return
+            self.add_log(
+                "[VIDEO] Replacing the regular video connection with video-only mode")
+            self._stop_camera_stream()
 
         host = '127.0.0.1' if _IS_LOCAL else self.ip_input.text().strip()
         if not host:
