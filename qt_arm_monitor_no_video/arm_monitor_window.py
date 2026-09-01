@@ -595,7 +595,7 @@ class ArmMonitorWindow(QMainWindow):
             hl.addStretch()
             return container
 
-        # ===== MIDDLE AREA: 3-Column =====
+        # ===== MIDDLE AREA: 2-Column =====
         main_row = QHBoxLayout()
         main_row.setSpacing(12)
 
@@ -684,56 +684,7 @@ class ArmMonitorWindow(QMainWindow):
 
         left_widget = QWidget()
         left_widget.setLayout(left_col)
-        main_row.addWidget(left_widget, 1)  # equal stretch
-
-        # ========== CENTER COLUMN: Video-free placeholder ==========
-        center_col = QVBoxLayout()
-        center_col.setSpacing(8)
-
-        video_card = make_card()
-        video_vl = QVBoxLayout(video_card)
-        video_vl.setContentsMargins(14, 10, 14, 10)
-        # Keep the original layout without creating an MJPEG connection.
-        video_header = QHBoxLayout()
-        video_header.setSpacing(8)
-        cam_dot = QLabel("\u25cf")
-        cam_dot.setFont(QFont("Arial", 10))
-        cam_dot.setStyleSheet("color: #94a3b8; background: transparent;")
-        cam_dot.setFixedWidth(14)
-        video_header.addWidget(cam_dot)
-        video_t = QLabel("缺陷检测显示区域")
-        video_t.setFont(QFont(_FONT, 13, QFont.Bold))
-        video_t.setStyleSheet("color: #1e293b; background: transparent;")
-        video_header.addWidget(video_t)
-        video_header.addStretch()
-        online_badge = QLabel(" 未启用视频 ")
-        online_badge.setFont(QFont(_FONT, 8, QFont.Bold))
-        online_badge.setFixedHeight(20)
-        online_badge.setStyleSheet(
-            "background-color: #e2e8f0; color: #475569;"
-            "border-radius: 10px; padding: 2px 10px;"
-        )
-        video_header.addWidget(online_badge)
-        video_vl.addLayout(video_header)
-
-        self.camera_label = QLabel(
-            "无视频流版本\n\n"
-            "设备控制、检测统计、运行状态和日志功能正常运行")
-        self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera_label.setFont(QFont(_FONT, 13))
-        self.camera_label.setMinimumSize(360, 220)
-        self.camera_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.camera_label.setStyleSheet("""
-            background-color: #1a1f2e; color: #8b95a5;
-            border: none; border-radius: 10px;
-        """)
-        self.camera_label.setWordWrap(True)
-        video_vl.addWidget(self.camera_label, 1)
-        center_col.addWidget(video_card, 1)
-
-        center_widget = QWidget()
-        center_widget.setLayout(center_col)
-        main_row.addWidget(center_widget, 2)  # center gets more space
+        main_row.addWidget(left_widget, 1)
 
         # ========== RIGHT COLUMN ==========
         right_col = QVBoxLayout()
@@ -838,7 +789,12 @@ class ArmMonitorWindow(QMainWindow):
 
         right_widget = QWidget()
         right_widget.setLayout(right_col)
-        main_row.addWidget(right_widget, 1)  # equal stretch
+        main_row.addWidget(right_widget, 1)
+
+        # The former video column is removed completely. Detection/quality and
+        # status/parameter panels now share all available width equally.
+        main_row.setStretch(0, 1)
+        main_row.setStretch(1, 1)
 
         ml.addLayout(main_row, 3)
 
