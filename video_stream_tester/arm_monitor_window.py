@@ -1035,6 +1035,8 @@ class ArmMonitorWindow(QMainWindow):
         self._log_count = 0
         self._LOG_MAX_LINES = 500
         self._cmd_worker = None  # SSHCmdWorker / LocalCmdWorker
+        self._video_cmd_worker = None  # Starts/stops the remote video-only service
+        self._video_start_ready = False
         self._cam_worker = None   # CameraStreamWorker
         self._status_worker = None  # StatusPollWorker
         self._STREAM_PORT = 8765
@@ -1954,6 +1956,9 @@ class ArmMonitorWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._stop_camera_stream()
+        if self._video_cmd_worker and self._video_cmd_worker.isRunning():
+            self._video_cmd_worker.stop()
+            self._video_cmd_worker.wait(2000)
         if self._cmd_worker and self._cmd_worker.isRunning():
             self._cmd_worker.stop()
             self._cmd_worker.wait(2000)
@@ -1965,11 +1970,21 @@ class ArmMonitorWindow(QMainWindow):
     # ===== Camera stream =====
 
     def _toggle_video_only(self):
-        """Connect/disconnect MJPEG without creating an SSH connection."""
-        if self._cam_worker and self._cam_worker.isRunning():
-            self._video_only_mode = False
+        """Start/stop the remote camera-to-MJPEG pipeline without sorting."""
+        if self._video_cmd_worker and self._video_cmd_worker.isRunning():
+            self.add_log("[VIDEO] Video service command is still running")
+            return
+
+        if (self._cam_worker and self._cam_worker.isRunning() and
+                self._video_only_mode):
             self._stop_camera_stream()
-            self.add_log("[VIDEO] Video-only connection stopped")
+            self._run_video_service_command(
+                "bash ~/stop_video_only.sh", self._on_video_stop_status)
+            self.add_log("[VIDEO] Stopping independent video service...")
+            return
+
+        if self._cam_worker and self._cam_worker.isRunning():
+            self.add_log("[VIDEO] The full system video stream is already connected")
             return
 
         host = '127.0.0.1' if _IS_LOCAL else self.ip_input.text().strip()
@@ -1978,9 +1993,71 @@ class ArmMonitorWindow(QMainWindow):
             self.camera_label.setText("请输入设备IP")
             return
 
-        self._start_camera_stream(video_only=True)
-        self.add_log(
-            f"[VIDEO] Video-only connection: http://{host}:{self._STREAM_PORT}/")
+        self._video_start_ready = False
+        self.btn_video_only.setEnabled(False)
+        self.btn_video_only.setText("正在启动视频...")
+        self.camera_label.setText("正在启动设备端视频服务...")
+        self.add_log("[VIDEO] Starting camera, image conversion and MJPEG only")
+        self.add_log("[VIDEO] Arm, inverse kinematics, sortation and conveyor remain stopped")
+        self._run_video_service_command(
+            "bash ~/start_video_only.sh && echo __VIDEO_ONLY_READY__",
+            self._on_video_start_status)
+
+    def _run_video_service_command(self, cmd, status_handler):
+        """Run a finite video-only control script locally or over SSH."""
+        if _IS_LOCAL:
+            self._video_cmd_worker = LocalCmdWorker(cmd)
+        else:
+            host = self.ip_input.text().strip()
+            self._video_cmd_worker = SSHCmdWorker(
+                host, 'jetson', 'yahboom', cmd)
+        self._video_cmd_worker.log_signal.connect(self._on_video_cmd_log)
+        self._video_cmd_worker.status_signal.connect(status_handler)
+        self._video_cmd_worker.start()
+
+    def _on_video_cmd_log(self, line):
+        if line == "__VIDEO_ONLY_READY__":
+            self._video_start_ready = True
+            return
+        self.add_log(f"[VIDEO-REM] {line}")
+
+    def _on_video_start_status(self, status):
+        self._video_cmd_worker = None
+        self.btn_video_only.setEnabled(True)
+        if status == 'finished' and self._video_start_ready:
+            host = '127.0.0.1' if _IS_LOCAL else self.ip_input.text().strip()
+            self.add_log(
+                f"[VIDEO] Service ready; connecting to http://{host}:{self._STREAM_PORT}/")
+            self._start_camera_stream(video_only=True)
+            return
+
+        error = status[6:] if status.startswith('error:') else "设备端视频服务启动失败"
+        self.add_log(f"[VIDEO] Start failed: {error}")
+        self.camera_label.setText("视频服务启动失败\n请查看运行日志")
+        self._set_video_button(False)
+
+    def _on_video_stop_status(self, status):
+        self._video_cmd_worker = None
+        if status.startswith('error:'):
+            self.add_log(f"[VIDEO] Stop command failed: {status[6:]}")
+        else:
+            self.add_log("[VIDEO] Independent video service stopped")
+        self._set_video_button(False)
+
+    def _set_video_button(self, connected):
+        self.btn_video_only.setEnabled(True)
+        if connected:
+            self.btn_video_only.setText("断开视频")
+            self.btn_video_only.setStyleSheet("""
+                QPushButton { background: #ef4444; color: white; border-radius: 6px; padding: 6px 14px; }
+                QPushButton:hover { background: #f87171; }
+            """)
+        else:
+            self.btn_video_only.setText("只连接视频")
+            self.btn_video_only.setStyleSheet("""
+                QPushButton { background: #8b5cf6; color: white; border-radius: 6px; padding: 6px 14px; }
+                QPushButton:hover { background: #9d73f7; }
+            """)
 
     def _start_camera_stream(self, video_only=False):
         """Connect to MJPEG stream from frame_streamer on Jetson."""
@@ -1997,20 +2074,12 @@ class ArmMonitorWindow(QMainWindow):
         self._cam_worker.status_signal.connect(self._on_camera_status)
         self._video_frame_seen = False
         self._cam_worker.start()
-        self.btn_video_only.setText("断开视频")
-        self.btn_video_only.setStyleSheet("""
-            QPushButton { background: #ef4444; color: white; border-radius: 6px; padding: 6px 14px; }
-            QPushButton:hover { background: #f87171; }
-        """)
+        if video_only:
+            self._set_video_button(True)
         self.camera_label.setText(_TX['WAIT_CAM'])
         self.camera_label.setStyleSheet(
             "background-color: #1a1f2e; color: #8b95a5;"
             " border: none; border-radius: 10px;")
-        self.btn_video_only.setText("只连接视频")
-        self.btn_video_only.setStyleSheet("""
-            QPushButton { background: #8b5cf6; color: white; border-radius: 6px; padding: 6px 14px; }
-            QPushButton:hover { background: #9d73f7; }
-        """)
         # Joint angle polling removed (display removed from UI)
 
     def _stop_camera_stream(self):
@@ -2030,6 +2099,7 @@ class ArmMonitorWindow(QMainWindow):
             self._cam_worker.wait(3000)
             self._cam_worker = None
         self._video_only_mode = False
+        self._set_video_button(False)
         self.camera_label.clear()
         self.camera_label.setText(_TX['WAIT_CAM'])
         self.camera_label.setStyleSheet(
