@@ -102,7 +102,7 @@ class Yolov11GraspNode(Node):
         self.gripper_joint = 90.0
         # Joint6: smaller angles open the gripper. Pre-close it at a safe
         # height before descending into the tray, then keep this width fixed.
-        self.GRIPPER_APPROACH_ANGLE = 80.0
+        self.GRIPPER_APPROACH_ANGLE = 90.0
         self.GRIPPER_CLOSED_ANGLE = 165.0
         self.GRIPPER_RELEASE_ANGLE = 30.0
         self.depth_bridge = CvBridge()
