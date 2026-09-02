@@ -16,7 +16,9 @@ LOCK_FILE = Path("/tmp/dofbot_place_pose_capture.lock")
 RESULT_FILE = Path("/tmp/dofbot_place_pose.json")
 SAMPLE_COUNT = 5
 MAX_SAMPLE_SPREAD_DEG = 4
+READ_RETRIES = 5
 PING_OK = 0xDA
+JOINT_LIMITS = ((0, 180), (0, 180), (0, 180), (0, 180), (0, 270), (0, 180))
 
 CONFLICT_PATTERNS = (
     "dofbot_pro_driver arm_driver",
@@ -77,11 +79,32 @@ def check_servo_communication(arm):
     log("[通过] 1至6号舵机通信正常")
 
 
+def raw_to_angle(joint_id, raw_value):
+    if joint_id == 5:
+        return 270.0 * (raw_value - 380) / (3700 - 380)
+
+    angle = 180.0 * (raw_value - 900) / (3100 - 900)
+    if joint_id in (2, 3, 4):
+        angle = 180.0 - angle
+    return angle
+
+
 def read_joint(arm, joint_id):
-    value = arm.Arm_serial_servo_read(joint_id)
-    if value is None:
-        raise RuntimeError(f"{joint_id}号关节角度读取失败")
-    return float(value)
+    last_error = None
+    for _ in range(READ_RETRIES):
+        try:
+            arm.bus.write_byte_data(arm.addr, joint_id + 0x30, 0x00)
+            time.sleep(0.005)
+            raw_value = arm.bus.read_word_data(arm.addr, joint_id + 0x30)
+            if raw_value != 0:
+                raw_value = ((raw_value >> 8) & 0xFF) | ((raw_value << 8) & 0xFF00)
+                return raw_to_angle(joint_id, raw_value)
+        except OSError as exc:
+            last_error = exc
+        time.sleep(0.03)
+
+    detail = f": {last_error}" if last_error is not None else ""
+    raise RuntimeError(f"{joint_id}号关节连续{READ_RETRIES}次读取失败{detail}")
 
 
 def capture_stable_pose(arm):
@@ -100,7 +123,19 @@ def capture_stable_pose(arm):
     if unstable:
         raise RuntimeError("姿态不稳定，请扶稳后重试: " + "，".join(unstable))
 
-    return [int(round(statistics.median(values))) for values in samples]
+    pose = []
+    for joint_id, (values, limits) in enumerate(
+        zip(samples, JOINT_LIMITS), start=1
+    ):
+        angle = int(round(statistics.median(values)))
+        minimum, maximum = limits
+        if angle < minimum - 3 or angle > maximum + 3:
+            raise RuntimeError(
+                f"关节{joint_id}角度{angle}°超出允许范围{minimum}～{maximum}°，"
+                "请将该关节稍微移回后重新采集"
+            )
+        pose.append(min(max(angle, minimum), maximum))
+    return pose
 
 
 def run():
@@ -127,7 +162,13 @@ def run():
 
         log("\n请用手缓慢移动机械臂到新的缺陷件投放位置。")
         log("重点调整关节1至5；程序投放时会把关节6保持为夹紧角165°。")
-        input("到达目标位置并扶稳后按 Enter 开始读取...")
+        input("到达目标位置并扶稳后按 Enter 锁定当前位置并开始读取...")
+
+        # This controller returns position feedback reliably only while torque
+        # is enabled. Enabling torque holds the manually taught current pose.
+        arm.Arm_serial_set_torque(1)
+        torque_released = False
+        time.sleep(0.5)
 
         pose = capture_stable_pose(arm)
         result = {
@@ -144,7 +185,13 @@ def run():
         log("[待写入代码] quexianketi joint: " + str(result["sort_item_value"]))
         log(f"[结果文件] {RESULT_FILE}")
 
-        log("\n请继续托住机械臂，并缓慢将机械臂摆回安全的竖直初始姿态。")
+        log("\n[安全提示] 请重新托住机械臂，准备再次关闭扭矩。")
+        input("托稳后按 Enter 关闭扭矩并准备摆回竖直...")
+        arm.Arm_serial_set_torque(0)
+        torque_released = True
+        time.sleep(0.2)
+
+        log("请缓慢将机械臂摆回安全的竖直初始姿态。")
         input("摆回竖直并扶稳后按 Enter 恢复舵机扭矩...")
         arm.Arm_serial_set_torque(1)
         torque_released = False
