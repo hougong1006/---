@@ -28,6 +28,20 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
+typedef struct
+{
+  GPIO_PinState stable_state;
+  uint16_t high_count;
+  uint16_t low_count;
+} DebouncedInput;
+
+typedef enum
+{
+  INDICATOR_OFF = 0,
+  INDICATOR_RUNNING,
+  INDICATOR_DEFECT
+} IndicatorMode;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -54,7 +68,11 @@
 #define RELAY_ON_LEVEL      GPIO_PIN_SET
 #define RELAY_OFF_LEVEL     GPIO_PIN_RESET
 
-#define STATUS_SCAN_TIME_MS     10U
+#define STATUS_SCAN_TIME_MS       10U
+#define RUN_ASSERT_SAMPLES        20U  /* 连续高200 ms才确认正常运行 */
+#define RUN_RELEASE_SAMPLES       20U  /* 连续低200 ms才撤销正常运行 */
+#define DEFECT_ASSERT_SAMPLES     10U  /* 连续高100 ms才进入报警 */
+#define DEFECT_RELEASE_SAMPLES    30U  /* 连续低300 ms才解除报警 */
 
 /* USER CODE END PD */
 
@@ -66,6 +84,10 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+
+static DebouncedInput conveyor_run_input = {GPIO_PIN_RESET, 0U, 0U};
+static DebouncedInput defect_grab_input = {GPIO_PIN_RESET, 0U, 0U};
+static IndicatorMode current_indicator_mode = INDICATOR_OFF;
 
 /* USER CODE END PV */
 
@@ -92,26 +114,101 @@ static void Relay_SetState(GPIO_PinState green,
   HAL_GPIO_WritePin(GPIOB, RELAY_BUZZER_PIN, buzzer);
 }
 
-static void Indicator_Update(void)
+static GPIO_PinState Debounce_Update(DebouncedInput *input,
+                                      GPIO_PinState raw_state,
+                                      uint16_t assert_samples,
+                                      uint16_t release_samples)
 {
-  GPIO_PinState conveyor_running;
-  GPIO_PinState defect_grabbing;
+  if (raw_state == GPIO_PIN_SET)
+  {
+    input->low_count = 0U;
+    if (input->stable_state == GPIO_PIN_RESET)
+    {
+      if (++input->high_count >= assert_samples)
+      {
+        input->stable_state = GPIO_PIN_SET;
+        input->high_count = 0U;
+      }
+    }
+    else
+    {
+      input->high_count = 0U;
+    }
+  }
+  else
+  {
+    input->high_count = 0U;
+    if (input->stable_state == GPIO_PIN_SET)
+    {
+      if (++input->low_count >= release_samples)
+      {
+        input->stable_state = GPIO_PIN_RESET;
+        input->low_count = 0U;
+      }
+    }
+    else
+    {
+      input->low_count = 0U;
+    }
+  }
 
-  conveyor_running = HAL_GPIO_ReadPin(GPIOA, CONVEYOR_RUN_INPUT_PIN);
-  defect_grabbing = HAL_GPIO_ReadPin(GPIOA, DEFECT_GRAB_INPUT_PIN);
+  return input->stable_state;
+}
 
-  /* 报警状态优先，防止两个输入短暂同时为高时绿灯与红灯同时亮。 */
-  if (defect_grabbing == GPIO_PIN_SET)
+static void Indicator_ApplyMode(IndicatorMode mode)
+{
+  if (mode == current_indicator_mode)
+  {
+    return;
+  }
+
+  if (mode == INDICATOR_DEFECT)
   {
     Relay_SetState(RELAY_OFF_LEVEL, RELAY_ON_LEVEL, RELAY_ON_LEVEL);
   }
-  else if (conveyor_running == GPIO_PIN_SET)
+  else if (mode == INDICATOR_RUNNING)
   {
     Relay_SetState(RELAY_ON_LEVEL, RELAY_OFF_LEVEL, RELAY_OFF_LEVEL);
   }
   else
   {
     Relay_AllOff();
+  }
+
+  current_indicator_mode = mode;
+}
+
+static void Indicator_Update(void)
+{
+  GPIO_PinState raw_conveyor_running;
+  GPIO_PinState raw_defect_grabbing;
+  GPIO_PinState conveyor_running;
+  GPIO_PinState defect_grabbing;
+
+  raw_conveyor_running = HAL_GPIO_ReadPin(GPIOA, CONVEYOR_RUN_INPUT_PIN);
+  raw_defect_grabbing = HAL_GPIO_ReadPin(GPIOA, DEFECT_GRAB_INPUT_PIN);
+
+  conveyor_running = Debounce_Update(&conveyor_run_input,
+                                      raw_conveyor_running,
+                                      RUN_ASSERT_SAMPLES,
+                                      RUN_RELEASE_SAMPLES);
+  defect_grabbing = Debounce_Update(&defect_grab_input,
+                                     raw_defect_grabbing,
+                                     DEFECT_ASSERT_SAMPLES,
+                                     DEFECT_RELEASE_SAMPLES);
+
+  /* 消抖后的报警状态优先，防止两个输入同时为高时绿灯与红灯同时亮。 */
+  if (defect_grabbing == GPIO_PIN_SET)
+  {
+    Indicator_ApplyMode(INDICATOR_DEFECT);
+  }
+  else if (conveyor_running == GPIO_PIN_SET)
+  {
+    Indicator_ApplyMode(INDICATOR_RUNNING);
+  }
+  else
+  {
+    Indicator_ApplyMode(INDICATOR_OFF);
   }
 }
 
