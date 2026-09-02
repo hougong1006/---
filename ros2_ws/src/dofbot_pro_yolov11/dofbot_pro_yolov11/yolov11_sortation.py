@@ -96,7 +96,7 @@ class Yolov11GraspNode(Node):
         self.color_y = 0.0
         self.color_z = 0.15
         self.grasp_flag = True
-        self.init_joints = [90.0, 113.0, 29.0, -18.0, 90.0, 30.0]
+        self.init_joints = [89.0, 56.0, 94.0, -36.0, 90.0, 30.0]
         self.down_joint = [130.0, 55.0, 34.0, 16.0, 90.0, 125.0]
         self.set_joint = [90.0, 120.0, 0.0, 0.0, 90.0, 90.0]
         self.gripper_joint = 90.0
