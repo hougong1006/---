@@ -6,7 +6,7 @@
 #   2. grasp_done 回调中自动重启下一轮检测（0.1秒延迟）
 #   3. 支持重检测信号：Phase1停带后触发一次精确重检测
 #   4. 未检测到目标时保持扫描（不停止）
-#   5. 多帧投票：连续5帧检测，>=3帧一致才发布，防止误分类
+#   5. 缺陷件使用15帧/10票确认；标准件使用多目标跟踪过线计数
 # ============================================================
 from collections import Counter
 import rclpy
@@ -88,12 +88,14 @@ class Yolov11DetectNode(Node):
         # 离开画面时穿线孔容易因透视和凹槽遮挡产生误判。
         self.ROI_LEFT = 120
         self.ROI_RIGHT = 520
-        # Standard parts pass through without grasping. Count one part after
-        # VOTE_THRESHOLD confirmed frames, then wait until it leaves before rearming.
-        self.standard_vote_count = 0
-        self.standard_count_latched = False
-        self.standard_absent_count = 0
-        self.STANDARD_RELEASE_FRAMES = 3
+        # 标准件不抓取，使用中心点跟踪并在越过计数线时计数。每条轨迹只
+        # 计数一次，可同时处理托盘上的多个工件，也不会因检测框闪烁重复计数。
+        self.STANDARD_CONFIRM_FRAMES = 3
+        self.STANDARD_COUNT_LINE_X = 320
+        self.STANDARD_TRACK_MAX_DISTANCE = 70
+        self.STANDARD_TRACK_MAX_MISSED = 8
+        self.standard_tracks = {}
+        self.next_standard_track_id = 1
 
         # 启动 MJPEG 视频流服务（供上位机远程查看带检测框的画面）
         threading.Thread(target=_start_mjpeg_server, daemon=True).start()
@@ -102,6 +104,68 @@ class Yolov11DetectNode(Node):
         # 自动启动定时器：8秒后自动开始检测（等待其他节点就绪）
         self.auto_start_timer = self.create_timer(8.0, self.auto_start_callback)
         self.get_logger().info(f"YOLOv11 检测节点初始化完成，8秒后自动开始检测（多帧投票: {self.VOTE_FRAMES}帧/{self.VOTE_THRESHOLD}票）...")
+
+    def _update_standard_tracks(self, detections):
+        """Track all standard parts and emit one count when each crosses the line."""
+        for track in self.standard_tracks.values():
+            track['missed'] += 1
+
+        candidates = []
+        max_distance_sq = self.STANDARD_TRACK_MAX_DISTANCE ** 2
+        for detection_index, (cx, cy) in enumerate(detections):
+            for track_id, track in self.standard_tracks.items():
+                distance_sq = ((cx - track['cx']) ** 2 +
+                               (cy - track['cy']) ** 2)
+                if distance_sq <= max_distance_sq:
+                    candidates.append((distance_sq, detection_index, track_id))
+
+        matched_detections = set()
+        matched_tracks = set()
+        for _, detection_index, track_id in sorted(candidates):
+            if (detection_index in matched_detections or
+                    track_id in matched_tracks):
+                continue
+            cx, cy = detections[detection_index]
+            track = self.standard_tracks[track_id]
+            track['cx'] = cx
+            track['cy'] = cy
+            track['hits'] += 1
+            track['missed'] = 0
+            if cx > self.STANDARD_COUNT_LINE_X:
+                track['seen_right'] = True
+            matched_detections.add(detection_index)
+            matched_tracks.add(track_id)
+
+        for detection_index, (cx, cy) in enumerate(detections):
+            if detection_index in matched_detections:
+                continue
+            track_id = self.next_standard_track_id
+            self.next_standard_track_id += 1
+            self.standard_tracks[track_id] = {
+                'cx': cx,
+                'cy': cy,
+                'hits': 1,
+                'missed': 0,
+                'seen_right': cx > self.STANDARD_COUNT_LINE_X,
+                'counted': False,
+            }
+
+        stale_track_ids = [
+            track_id for track_id, track in self.standard_tracks.items()
+            if track['missed'] > self.STANDARD_TRACK_MAX_MISSED
+        ]
+        for track_id in stale_track_ids:
+            del self.standard_tracks[track_id]
+
+        for track_id, track in self.standard_tracks.items():
+            if (track['missed'] == 0 and not track['counted'] and
+                    track['hits'] >= self.STANDARD_CONFIRM_FRAMES and
+                    track['seen_right'] and
+                    track['cx'] <= self.STANDARD_COUNT_LINE_X):
+                self.get_logger().info(
+                    f"[COUNT] biaozhunketi track={track_id} "
+                    f"hits={track['hits']}")
+                track['counted'] = True
 
     def auto_start_callback(self):
         """上电后自动开始检测，无需按空格"""
@@ -135,8 +199,10 @@ class Yolov11DetectNode(Node):
                     0.55, (0, 255, 255), 2)
 
         detected_this_frame = False
-        standard_seen_this_frame = False
-        if boxes != [None] and self.start_flag == True:
+        defect_processed_this_frame = False
+        standard_detections = []
+        scan_active = self.start_flag
+        if boxes != [None] and scan_active:
             for box in boxes:
                 x_min, y_min, x_max, y_max = map(int, box.xyxy[0])
                 class_id = int(box.cls)
@@ -172,19 +238,19 @@ class Yolov11DetectNode(Node):
                     continue
 
                 if class_name == 'biaozhunketi':
-                    standard_seen_this_frame = True
-                    self.standard_absent_count = 0
-                    if not self.standard_count_latched:
-                        self.standard_vote_count += 1
-                        if self.standard_vote_count >= self.VOTE_THRESHOLD:
-                            self.get_logger().info('[COUNT] biaozhunketi')
-                            self.standard_count_latched = True
-                            self.standard_vote_count = 0
+                    standard_detections.append(
+                        (float(center_x), float(center_y)))
                     continue
 
                 # Only defective parts enter voting, stop-belt and grasp flow.
                 if class_name != 'quexianketi':
                     continue
+
+                # 每帧最多向缺陷投票缓冲写入一个目标，但继续遍历其余检测框，
+                # 确保同一画面内的所有标准件都能进入独立跟踪。
+                if defect_processed_this_frame:
+                    continue
+                defect_processed_this_frame = True
 
                 detected_this_frame = True
                 self.no_detect_count = 0
@@ -222,13 +288,8 @@ class Yolov11DetectNode(Node):
                         self.get_logger().info(
                             f"[投票未通过] 无共识 {dict(counter)}，滑动窗口继续...")
                         self.vote_buffer.pop(0)
-                break
-
-        if not standard_seen_this_frame:
-            self.standard_absent_count += 1
-            if self.standard_absent_count >= self.STANDARD_RELEASE_FRAMES:
-                self.standard_count_latched = False
-                self.standard_vote_count = 0
+        if scan_active:
+            self._update_standard_tracks(standard_detections)
 
         # 未检测到目标时：连续无检测超过阈值则清空投票缓冲
         if not detected_this_frame and self.start_flag == True:

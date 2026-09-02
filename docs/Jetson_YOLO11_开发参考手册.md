@@ -146,7 +146,10 @@ Orbbec RGB-D相机
 | `VOTE_FRAMES` | 15 | 缺陷件投票窗口长度 |
 | `VOTE_THRESHOLD` | 10 | 至少10票一致才发布 |
 | `MAX_NO_DETECT` | 2 | 连续无缺陷目标后清空投票的阈值 |
-| `STANDARD_RELEASE_FRAMES` | 3 | 标准件离开后解除计数锁存 |
+| `STANDARD_CONFIRM_FRAMES` | 3 | 标准件轨迹至少命中3帧才允许计数 |
+| `STANDARD_COUNT_LINE_X` | 320像素 | 标准件从右向左越过该线时计数 |
+| `STANDARD_TRACK_MAX_DISTANCE` | 70像素 | 相邻帧检测框中心的最大匹配距离 |
+| `STANDARD_TRACK_MAX_MISSED` | 8帧 | 短时漏检时保留标准件轨迹的帧数 |
 | `ROI_LEFT` | 120像素 | 有效判定区左边界，过滤工件即将离开画面时的透视误判 |
 | `ROI_RIGHT` | 520像素 | 有效判定区右边界，过滤工件尚未完全进入画面的检测结果 |
 | 自动开始延迟 | 8秒 | 等待其它节点初始化 |
@@ -154,13 +157,16 @@ Orbbec RGB-D相机
 | JPEG质量 | 70 | MJPEG帧压缩质量 |
 | MJPEG发送间隔 | 0.066秒 | 理论上限约15 FPS，不等于实际推理帧率 |
 
-标准件使用`VOTE_THRESHOLD=10`累计确认，确认后输出：
+标准件使用独立的中心点轨迹进行去重。轨迹命中至少3帧并从右向左越过
+`X=320`计数线后输出：
 
 ```text
-[COUNT] biaozhunketi
+[COUNT] biaozhunketi track=<轨迹编号> hits=<命中帧数>
 ```
 
-标准件计数采用锁存方式，同一零件持续出现在画面时只计一次；连续3帧未看到标准件后重新允许下一次计数。
+每条轨迹只计数一次，因此同一画面中的多个标准件可以分别统计，同一标准件
+持续出现或在计数线左侧短暂丢失后重新出现也不会重复统计。缺陷抓取暂停期间
+不老化标准件轨迹，恢复检测后不会把停在原位的工件再次计数。
 
 缺陷件通过15帧/10票后发布`Yolov11DetectInfo(result, centerx, centery)`。
 
