@@ -21,13 +21,15 @@ JOINT_MOVE_MS = 800
 PID_FILE = Path("/tmp/dofbot_joint_self_test.pid")
 LOCK_FILE = Path("/tmp/dofbot_joint_self_test.lock")
 
-CONFLICT_PATTERNS = (
-    "dofbot_pro_driver arm_driver",
+CONFLICT_TOKENS = (
+    "arm_driver",
     "arm_driver_node",
     "yolov11_sortation",
-    "/yolov11.py",
+    "yolov11.py",
     "msgToimg",
     "dabai_dcw2.launch.py",
+    "__node:=camera_container",
+    "orbbec_camera_node",
     "kinemarics_dofbot",
 )
 
@@ -65,13 +67,17 @@ def find_conflicting_processes():
             pid = int(proc_dir.name)
             if pid == current_pid:
                 continue
-            command = (proc_dir / "cmdline").read_bytes().replace(b"\0", b" ").decode(
-                "utf-8", errors="replace"
-            )
+            raw_tokens = (proc_dir / "cmdline").read_bytes().split(b"\0")
+            tokens = [
+                token.decode("utf-8", errors="replace")
+                for token in raw_tokens
+                if token
+            ]
         except (OSError, ValueError):
             continue
-        if any(pattern in command for pattern in CONFLICT_PATTERNS):
-            conflicts.append((pid, command.strip()))
+        token_names = {Path(token).name for token in tokens}
+        if any(token in token_names or token in tokens for token in CONFLICT_TOKENS):
+            conflicts.append((pid, " ".join(tokens)))
     return conflicts
 
 

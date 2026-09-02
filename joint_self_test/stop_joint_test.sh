@@ -6,15 +6,49 @@ PID_FILE="/tmp/dofbot_joint_self_test.pid"
 LOG_FILE="/tmp/dofbot_joint_self_test.log"
 WAIT_SECONDS=12
 
-if [ ! -s "$PID_FILE" ]; then
-    echo "[提示] 关节自检未运行"
-    exit 0
+process_is_joint_test() {
+    local proc_pid=$1
+    local arg base
+    [ -r "/proc/$proc_pid/cmdline" ] || return 1
+    while IFS= read -r -d '' arg; do
+        base=${arg##*/}
+        [ "$base" = "joint_self_test.py" ] && return 0
+    done < "/proc/$proc_pid/cmdline" 2>/dev/null
+    return 1
+}
+
+find_joint_test_pids() {
+    local proc proc_pid
+    for proc in /proc/[0-9]*; do
+        proc_pid=${proc##*/}
+        [ "$proc_pid" = "$$" ] && continue
+        if process_is_joint_test "$proc_pid"; then
+            printf '%s\n' "$proc_pid"
+        fi
+    done
+}
+
+pid=""
+if [ -s "$PID_FILE" ]; then
+    recorded_pid="$(cat "$PID_FILE" 2>/dev/null)"
+    if [[ "$recorded_pid" =~ ^[0-9]+$ ]] && kill -0 "$recorded_pid" 2>/dev/null; then
+        if process_is_joint_test "$recorded_pid"; then
+            pid="$recorded_pid"
+        else
+            echo "[清理] PID记录已被其他进程复用，不会终止该进程"
+        fi
+    fi
 fi
 
-pid="$(cat "$PID_FILE" 2>/dev/null)"
-if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
-    echo "[失败] PID文件内容无效: $PID_FILE"
-    exit 1
+if [ -z "$pid" ]; then
+    fallback_pids=$(find_joint_test_pids)
+    if [ -z "$fallback_pids" ]; then
+        echo "[提示] 关节自检未运行"
+        rm -f "$PID_FILE"
+        exit 0
+    fi
+    pid=$(printf '%s\n' "$fallback_pids" | head -n 1)
+    echo "[恢复] PID记录缺失，已找到关节自检进程: $pid"
 fi
 
 if ! kill -0 "$pid" 2>/dev/null; then
@@ -24,7 +58,7 @@ if ! kill -0 "$pid" 2>/dev/null; then
 fi
 
 command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
-if [[ "$command_line" != *"joint_self_test.py"* ]]; then
+if ! process_is_joint_test "$pid"; then
     echo "[拒绝停止] PID $pid 不属于关节自检程序"
     echo "[进程] $command_line"
     exit 2

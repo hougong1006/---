@@ -18,6 +18,13 @@ ROS_SETUP="/opt/ros/humble/setup.bash"
 WS_SETUP="$HOME/dofbot_pro_ws/install/setup.bash"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-98}"
 STOP_SENT=0
+RUN_TOKEN_FILE="/tmp/dofbot_sorting_run.token"
+
+# A real user/UI stop invalidates any start script that may still be sleeping
+# between node launches. Internal pre-start cleanup preserves the new token.
+if [ "${DOFBOT_PRESTART_CLEANUP:-0}" != "1" ]; then
+    printf '%s\n' "stopped-$$-$(date +%s%N)" > "$RUN_TOKEN_FILE"
+fi
 
 configure_gpio() {
     echo "[GPIO] 检查传送带停止引脚复用..."
@@ -82,24 +89,64 @@ request_owner_stop() {
     return 1
 }
 
-# Match runtime processes without treating log readers whose file arguments
-# contain node names as the nodes themselves.
-find_runtime_pids() {
-    local pattern=$1
-    local proc pid comm command
+# Match a complete executable/script token. A log path containing a node name
+# is not a match, which prevents tail/grep processes from being terminated.
+process_has_token() {
+    local pid=$1
+    local target=$2
+    local arg base
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    while IFS= read -r -d '' arg; do
+        base=${arg##*/}
+        if [ "$arg" = "$target" ] || [ "$base" = "$target" ]; then
+            return 0
+        fi
+    done < "/proc/$pid/cmdline" 2>/dev/null
+    return 1
+}
 
+find_runtime_pids() {
+    local target=$1
+    local proc pid
     for proc in /proc/[0-9]*; do
         pid=${proc##*/}
         [ "$pid" = "$$" ] && continue
-        comm=$(cat "$proc/comm" 2>/dev/null) || continue
-        case "$comm" in
-            tail|less|more|grep|sed) continue ;;
-        esac
-        command=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
-        case "$command" in
-            *"$pattern"*) printf '%s\n' "$pid" ;;
-        esac
+        process_has_token "$pid" "$target" && printf '%s\n' "$pid"
     done
+}
+
+marker_for_name() {
+    case "$1" in
+        camera) printf '%s\n' "dabai_dcw2.launch.py" ;;
+        arm_driver) printf '%s\n' "arm_driver" ;;
+        kinemarics) printf '%s\n' "kinemarics_dofbot" ;;
+        msgToimg) printf '%s\n' "msgToimg" ;;
+        yolov11) printf '%s\n' "yolov11.py" ;;
+        yolov11_sortation) printf '%s\n' "yolov11_sortation" ;;
+        *) return 1 ;;
+    esac
+}
+
+terminate_pid_or_group() {
+    local pid=$1
+    local pgid
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    if [ "$pgid" = "$pid" ]; then
+        kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    else
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+}
+
+force_pid_or_group() {
+    local pid=$1
+    local marker=${2:-}
+    if kill -0 -- "-$pid" 2>/dev/null; then
+        kill -KILL -- "-$pid" 2>/dev/null || true
+    elif kill -0 "$pid" 2>/dev/null && \
+            { [ -z "$marker" ] || process_has_token "$pid" "$marker"; }; then
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
 }
 
 # When sortation is running it owns BCM6. Ask that process to send the pulse;
@@ -120,24 +167,39 @@ fi
 echo ""
 
 # 方式1：通过PID文件停止
+validated_pids=()
+validated_names=()
+validated_markers=()
 if [ -f "$PID_FILE" ] && [ -s "$PID_FILE" ]; then
     echo "[1] 通过PID记录停止进程..."
     while read -r pid name; do
         if kill -0 "$pid" 2>/dev/null; then
-            echo "  停止 $name (PID: $pid)..."
-            kill "$pid" 2>/dev/null
+            marker=$(marker_for_name "$name" 2>/dev/null || true)
+            if [ -n "$marker" ] && process_has_token "$pid" "$marker"; then
+                echo "  停止 $name 进程组 (PID/PGID: $pid)..."
+                terminate_pid_or_group "$pid"
+                validated_pids+=("$pid")
+                validated_names+=("$name")
+                validated_markers+=("$marker")
+            else
+                echo "  跳过 $name (PID: $pid) - PID记录失效或已被复用"
+            fi
         else
             echo "  跳过 $name (PID: $pid) - 已退出"
         fi
     done < "$PID_FILE"
     sleep 2
     # 强制杀死残留
-    while read -r pid name; do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "  强制停止 $name (PID: $pid)..."
-            kill -9 "$pid" 2>/dev/null
+    for index in "${!validated_pids[@]}"; do
+        pid=${validated_pids[$index]}
+        name=${validated_names[$index]}
+        marker=${validated_markers[$index]}
+        if kill -0 -- "-$pid" 2>/dev/null || \
+                { kill -0 "$pid" 2>/dev/null && [ -n "$marker" ] && process_has_token "$pid" "$marker"; }; then
+            echo "  强制停止 $name 残留进程组 (PID/PGID: $pid)..."
+            force_pid_or_group "$pid" "$marker"
         fi
-    done < "$PID_FILE"
+    done
     > "$PID_FILE"
 fi
 
@@ -146,18 +208,23 @@ echo ""
 echo "[2] 清理残留ROS2节点进程..."
 
 cleanup_process() {
-    local pattern=$1
+    local token=$1
     local name=$2
     local pids
-    pids=$(find_runtime_pids "$pattern")
+    local pid
+    pids=$(find_runtime_pids "$token")
     if [ -n "$pids" ]; then
         echo "  停止 $name (PIDs: $pids)..."
-        kill $pids 2>/dev/null
+        while read -r pid; do
+            [ -n "$pid" ] && terminate_pid_or_group "$pid"
+        done <<< "$pids"
         sleep 1
         # 强制杀死残留
-        pids=$(find_runtime_pids "$pattern")
+        pids=$(find_runtime_pids "$token")
         if [ -n "$pids" ]; then
-            kill -9 $pids 2>/dev/null
+            while read -r pid; do
+                [ -n "$pid" ] && force_pid_or_group "$pid" "$token"
+            done <<< "$pids"
         fi
     else
         echo "  $name - 未运行"
@@ -165,6 +232,8 @@ cleanup_process() {
 }
 
 cleanup_process "dabai_dcw2.launch.py" "相机节点"
+cleanup_process "__node:=camera_container" "相机组件容器"
+cleanup_process "orbbec_camera_node" "相机独立节点"
 cleanup_process "arm_driver" "底层控制"
 cleanup_process "kinemarics_dofbot" "逆解程序"
 cleanup_process "msgToimg" "图像转换"
@@ -185,6 +254,29 @@ if [ "$STOP_SENT" -eq 0 ]; then
 fi
 
 echo ""
+remaining=""
+for token in dabai_dcw2.launch.py '__node:=camera_container' orbbec_camera_node \
+        arm_driver arm_driver_node \
+        kinemarics_dofbot msgToimg yolov11.py yolov11_sortation; do
+    pids=$(find_runtime_pids "$token")
+    [ -n "$pids" ] && remaining="$remaining $token:$pids"
+done
+
+if [ -n "$remaining" ]; then
+    echo "╔══════════════════════════════════════════╗"
+    echo "║      停止未完成：仍有后台进程残留         ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo "[残留]$remaining"
+    exit 1
+fi
+
+if [ "$STOP_SENT" -eq 0 ]; then
+    echo "╔══════════════════════════════════════════╗"
+    echo "║  软件节点已停止，但传送带停止信号未确认   ║"
+    echo "╚══════════════════════════════════════════╝"
+    exit 1
+fi
+
 echo "╔══════════════════════════════════════════╗"
 echo "║          所有节点已停止！                 ║"
 echo "╚══════════════════════════════════════════╝"

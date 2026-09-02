@@ -15,36 +15,77 @@ LOG_DIR="/tmp/dofbot_logs"
 
 mkdir -p "$LOG_DIR"
 
-sortation_is_running() {
-    local proc comm command
-    for proc in /proc/[0-9]*; do
-        comm=$(cat "$proc/comm" 2>/dev/null) || continue
-        case "$comm" in
-            tail|less|more|grep|sed) continue ;;
-        esac
-        command=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
-        case "$command" in
-            *yolov11_sortation*) return 0 ;;
-        esac
-    done
+process_has_token() {
+    local pid=$1
+    local target=$2
+    local arg base
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    while IFS= read -r -d '' arg; do
+        base=${arg##*/}
+        if [ "$arg" = "$target" ] || [ "$base" = "$target" ]; then
+            return 0
+        fi
+    done < "/proc/$pid/cmdline" 2>/dev/null
     return 1
 }
+
+find_processes_by_token() {
+    local target=$1
+    local proc pid
+    for proc in /proc/[0-9]*; do
+        pid=${proc##*/}
+        [ "$pid" = "$$" ] && continue
+        process_has_token "$pid" "$target" && printf '%s\n' "$pid"
+    done
+}
+
+marker_for_name() {
+    case "$1" in
+        camera) printf '%s\n' "dabai_dcw2.launch.py" ;;
+        msgToimg) printf '%s\n' "msgToimg" ;;
+        yolov11) printf '%s\n' "yolov11.py" ;;
+        *) return 1 ;;
+    esac
+}
+
+mode_conflicts=""
+for token in joint_self_test.py arm_driver arm_driver_node \
+        kinemarics_dofbot yolov11_sortation; do
+    found=$(find_processes_by_token "$token")
+    [ -n "$found" ] && mode_conflicts="$mode_conflicts $token:$found"
+done
+if [ -n "$mode_conflicts" ]; then
+    echo "[VIDEO][ERROR] Arm/joint-test processes are still running:$mode_conflicts"
+    echo "[VIDEO][ERROR] Wait for command 3 or run bash ~/stop_sorting.sh first"
+    exit 2
+fi
 
 if ss -ltn 2>/dev/null | grep -q ':8765 '; then
     echo "[VIDEO] MJPEG service is already listening on port 8765"
     exit 0
 fi
 
-if sortation_is_running; then
-    echo "[VIDEO][ERROR] Sortation node is running but port 8765 is unavailable"
-    echo "[VIDEO][ERROR] Stop the sortation system before starting video-only mode"
-    exit 2
+# Remove an incomplete video-only start before launching a new pipeline.
+partial_pids=""
+for token in dabai_dcw2.launch.py '__node:=camera_container' \
+        orbbec_camera_node msgToimg yolov11.py; do
+    found=$(find_processes_by_token "$token")
+    [ -n "$found" ] && partial_pids="$partial_pids $found"
+done
+if [ -n "$partial_pids" ]; then
+    echo "[VIDEO] Cleaning an incomplete previous video start:$partial_pids"
+    if ! bash "$HOME/stop_video_only.sh"; then
+        echo "[VIDEO][ERROR] Previous video process cleanup failed"
+        exit 4
+    fi
 fi
 
-# Discard only stale records. Live processes from another mode are never killed.
+# Discard stale records, but refuse to duplicate a validated live process.
 if [ -f "$PID_FILE" ]; then
-    while read -r pid _name; do
-        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+    while read -r pid name; do
+        marker=$(marker_for_name "$name" 2>/dev/null || true)
+        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null && \
+                [ -n "$marker" ] && process_has_token "$pid" "$marker"; then
             echo "[VIDEO][ERROR] A previous video-only process is still running (PID $pid)"
             echo "[VIDEO][ERROR] Run: bash ~/stop_video_only.sh"
             exit 3
