@@ -13,6 +13,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 import numpy as np
 from std_msgs.msg import Float32, Bool, Int8
+from std_srvs.srv import Trigger
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 import cv2 as cv
@@ -112,6 +113,13 @@ class Yolov11GraspNode(Node):
         self.conveyor_stopped = False   # 传送带是否已停止
         self.waiting_redetect = False   # 是否正在等待Phase2重新检测
         self.detected_name = None       # Phase1记住的物体名称
+        self.external_stop_requested = False
+        self.gpio_lock = threading.Lock()
+
+        # The process owning BCM6 handles the stop pulse. This avoids a second
+        # Jetson.GPIO process failing with "Device or resource busy".
+        self.stop_conveyor_service = self.create_service(
+            Trigger, 'stop_conveyor', self.stopConveyorServiceCallback)
 
         # ===== 重检测信号发布器 =====
         self.pub_redetect = self.create_publisher(Bool, 'redetect_signal', qos_profile=10)
@@ -129,15 +137,44 @@ class Yolov11GraspNode(Node):
     # ==================== GPIO 控制函数 ====================
     def send_stop_conveyor(self):
         """BCM6 短脉冲 → STM32 PA0(EXTI边沿触发) → 停止传送带"""
-        GPIO.output(BCM_STOP, GPIO.HIGH)
-        time.sleep(0.05)
-        GPIO.output(BCM_STOP, GPIO.LOW)
+        with self.gpio_lock:
+            GPIO.output(BCM_STOP, GPIO.HIGH)
+            time.sleep(0.05)
+            GPIO.output(BCM_STOP, GPIO.LOW)
 
     def send_start_conveyor(self):
         """BCM13 短脉冲 → STM32 PA1(EXTI边沿触发) → 启动传送带"""
-        GPIO.output(BCM_START, GPIO.HIGH)
-        time.sleep(0.05)
-        GPIO.output(BCM_START, GPIO.LOW)
+        if self.external_stop_requested:
+            print("[传送带] 系统停止锁定生效，忽略启动信号")
+            return False
+        with self.gpio_lock:
+            # Recheck after acquiring the lock in case a stop arrived while
+            # another conveyor operation was finishing.
+            if self.external_stop_requested:
+                print("[传送带] 系统停止锁定生效，忽略启动信号")
+                return False
+            GPIO.output(BCM_START, GPIO.HIGH)
+            time.sleep(0.05)
+            GPIO.output(BCM_START, GPIO.LOW)
+        return True
+
+    def stopConveyorServiceCallback(self, _request, response):
+        """Stop the conveyor from the GPIO-owning process and acknowledge it."""
+        self.external_stop_requested = True
+        self.start_sort = False
+        self.grasp_flag = False
+        self.waiting_redetect = False
+        try:
+            self.send_stop_conveyor()
+            self.conveyor_stopped = True
+            response.success = True
+            response.message = 'BCM6 stop pulse sent by sortation node'
+            print("[传送带] 收到系统停止服务，BCM6停止信号已发送")
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+            print(f"[警告] 系统停止服务发送BCM6失败: {exc}")
+        return response
 
     def do_grasp(self, cx, cy, name, dist):
         """Phase2: 传送带已停止，使用重新检测的精确坐标进行夹取"""
@@ -224,7 +261,7 @@ class Yolov11GraspNode(Node):
                     print(f"[Phase2等待] 深度无效: {self.name} ({self.cx},{self.cy}) 搜索半径150仍无效，继续等待...")
 
     def getSortFlagCallback(self, msg):
-        if msg.data == True:
+        if msg.data == True and not self.external_stop_requested:
             self.start_sort = True
             print(f"[分拣] 收到分拣信号，开始扫描... (start_sort={self.start_sort})")
 
@@ -259,11 +296,11 @@ class Yolov11GraspNode(Node):
         """异常恢复：重置所有状态，启动传送带，发布 grasp_done"""
         print("[错误恢复] 正在重置状态...")
         try:
-            self.send_start_conveyor()
+            conveyor_started = self.send_start_conveyor()
         except Exception:
-            pass
-        self.conveyor_stopped = False
-        self.grasp_flag = True
+            conveyor_started = False
+        self.conveyor_stopped = not conveyor_started
+        self.grasp_flag = not self.external_stop_requested
         self.name = None
         self.cx = 0
         self.cy = 0
@@ -369,9 +406,12 @@ class Yolov11GraspNode(Node):
         time.sleep(1.8)
 
         # ===== 归位到位后，启动传送带 =====
-        self.send_start_conveyor()
-        self.conveyor_stopped = False
-        print("[传送带] 机械臂已归位，传送带启动")
+        if self.send_start_conveyor():
+            self.conveyor_stopped = False
+            print("[传送带] 机械臂已归位，传送带启动")
+        else:
+            self.conveyor_stopped = True
+            print("[传送带] 系统停止锁定，归位后保持传送带停止")
 
         # 重置所有状态
         self.name = None
