@@ -247,7 +247,7 @@ class Yolov11GraspNode(Node):
         """Reject poses that Arm_Lib would otherwise ignore silently."""
         if len(joints) != 6:
             raise ValueError(f"投放姿态必须包含6个关节角度，当前={joints}")
-        limits = ((0, 180), (0, 180), (0, 180),
+        limits = ((0, 360), (0, 180), (0, 180),
                   (0, 180), (0, 270), (0, 180))
         for joint_id, (angle, (minimum, maximum)) in enumerate(
                 zip(joints, limits), start=1):

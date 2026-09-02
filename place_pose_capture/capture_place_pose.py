@@ -18,7 +18,8 @@ SAMPLE_COUNT = 5
 MAX_SAMPLE_SPREAD_DEG = 4
 READ_RETRIES = 5
 PING_OK = 0xDA
-JOINT_LIMITS = ((0, 180), (0, 180), (0, 180), (0, 180), (0, 270), (0, 180))
+# Arm_Lib defines the base servo (S1) as a 0-360 degree joint.
+JOINT_LIMITS = ((0, 360), (0, 180), (0, 180), (0, 180), (0, 270), (0, 180))
 
 CONFLICT_PATTERNS = (
     "dofbot_pro_driver arm_driver",
