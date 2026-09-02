@@ -12,6 +12,7 @@
 - `qt_arm_monitor`：基于PyQt5的设备控制与可视化监控界面。
 - `scripts`：设备一键启动、停止、GPIO配置和运行监控脚本。
 - `joint_self_test`：独立的六关节通信、运动与自动归位自检工具。
+- `conveyor_controller_stm32`：传送带启停STM32工程、脉冲输入消抖及接线说明。
 - `alarm_light_stm32`：独立报警灯STM32工程及Jetson状态信号接线说明。
 - `docs/Jetson_YOLO11_开发参考手册.md`：与当前代码基线对应的系统架构、参数、部署和验证手册。
 
