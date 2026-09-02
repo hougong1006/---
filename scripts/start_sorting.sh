@@ -34,7 +34,7 @@ mkdir -p "$LOG_DIR"
 > "$PID_FILE"
 
 # ==================== 1. GPIO Pinmux 配置 ====================
-echo "[1/7] 配置 GPIO 引脚复用 (BCM6 + BCM13)..."
+echo "[1/7] 配置 GPIO 引脚复用 (BCM6/13传送带 + BCM5/12报警灯)..."
 if [ -f "$HOME/setup_gpio.sh" ]; then
     if [ -n "${DOFBOT_SUDO_PASSWORD:-}" ]; then
         printf '%s\n' "$DOFBOT_SUDO_PASSWORD" | \
