@@ -15,12 +15,27 @@ LOG_DIR="/tmp/dofbot_logs"
 
 mkdir -p "$LOG_DIR"
 
+sortation_is_running() {
+    local proc comm command
+    for proc in /proc/[0-9]*; do
+        comm=$(cat "$proc/comm" 2>/dev/null) || continue
+        case "$comm" in
+            tail|less|more|grep|sed) continue ;;
+        esac
+        command=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+        case "$command" in
+            *yolov11_sortation*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 if ss -ltn 2>/dev/null | grep -q ':8765 '; then
     echo "[VIDEO] MJPEG service is already listening on port 8765"
     exit 0
 fi
 
-if pgrep -f 'yolov11_sortation' >/dev/null 2>&1; then
+if sortation_is_running; then
     echo "[VIDEO][ERROR] Sortation node is running but port 8765 is unavailable"
     echo "[VIDEO][ERROR] Stop the sortation system before starting video-only mode"
     exit 2

@@ -25,6 +25,7 @@ CONFLICT_PATTERNS = (
     "/yolov11.py",
     "joint_self_test.py",
 )
+NON_OWNING_PROCESS_NAMES = {"tail", "less", "more", "grep", "sed"}
 
 
 def log(message):
@@ -38,6 +39,11 @@ def find_conflicting_processes():
         try:
             pid = int(proc_dir.name)
             if pid == current_pid:
+                continue
+            process_name = (proc_dir / "comm").read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+            if process_name in NON_OWNING_PROCESS_NAMES:
                 continue
             command = (proc_dir / "cmdline").read_bytes().replace(b"\0", b" ").decode(
                 "utf-8", errors="replace"

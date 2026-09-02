@@ -82,10 +82,30 @@ request_owner_stop() {
     return 1
 }
 
+# Match runtime processes without treating log readers whose file arguments
+# contain node names as the nodes themselves.
+find_runtime_pids() {
+    local pattern=$1
+    local proc pid comm command
+
+    for proc in /proc/[0-9]*; do
+        pid=${proc##*/}
+        [ "$pid" = "$$" ] && continue
+        comm=$(cat "$proc/comm" 2>/dev/null) || continue
+        case "$comm" in
+            tail|less|more|grep|sed) continue ;;
+        esac
+        command=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+        case "$command" in
+            *"$pattern"*) printf '%s\n' "$pid" ;;
+        esac
+    done
+}
+
 # When sortation is running it owns BCM6. Ask that process to send the pulse;
 # opening BCM6 from a second Jetson.GPIO process would fail with EBUSY.
 echo "[0] 发送传送带停止信号 (BCM6, 50 ms)..."
-if pgrep -f "yolov11_sortation" >/dev/null 2>&1; then
+if [ -n "$(find_runtime_pids "yolov11_sortation")" ]; then
     if request_owner_stop; then
         STOP_SENT=1
     else
@@ -129,15 +149,15 @@ cleanup_process() {
     local pattern=$1
     local name=$2
     local pids
-    pids=$(pgrep -f "$pattern" 2>/dev/null)
+    pids=$(find_runtime_pids "$pattern")
     if [ -n "$pids" ]; then
         echo "  停止 $name (PIDs: $pids)..."
-        pkill -f "$pattern" 2>/dev/null
+        kill $pids 2>/dev/null
         sleep 1
         # 强制杀死残留
-        pids=$(pgrep -f "$pattern" 2>/dev/null)
+        pids=$(find_runtime_pids "$pattern")
         if [ -n "$pids" ]; then
-            pkill -9 -f "$pattern" 2>/dev/null
+            kill -9 $pids 2>/dev/null
         fi
     else
         echo "  $name - 未运行"
