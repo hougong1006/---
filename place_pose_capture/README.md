@@ -1,0 +1,36 @@
+# 缺陷件投放位置采集工具
+
+该工具用于重新示教缺陷件的投放姿态。它只读取机械臂六个关节角度，不会自动覆盖分拣程序。
+
+## 部署
+
+在Windows PowerShell中执行：
+
+```powershell
+scp -r "E:\机械臂jetson主板上全部代码（完整拷贝）\机械臂设计代码\jixiebichengxu\航空丝堵缺陷检测_当前工程\place_pose_capture" jetson@10.182.135.172:/home/jetson/
+```
+
+连接Jetson后执行：
+
+```bash
+chmod +x ~/place_pose_capture/*.sh ~/place_pose_capture/*.py
+bash ~/stop_sorting.sh
+bash ~/place_pose_capture/capture_place_pose.sh
+```
+
+## 操作顺序
+
+1. 确认传送带和分拣程序已经停止，并清空机械臂周围障碍物。
+2. 双手托住机械臂，按提示关闭舵机扭矩。
+3. 缓慢移动机械臂到新的缺陷件投放位置，扶稳后按回车。
+4. 工具连续读取5组角度并检查波动，输出六关节角度及可写入程序的数组。
+5. 继续托住机械臂，将其缓慢摆回竖直初始姿态，再按回车恢复扭矩。
+6. 将终端中`[待写入代码]`后面的数组发回，由程序更新缺陷件投放位置并再次验证。
+
+读取结果同时保存于：
+
+```text
+/tmp/dofbot_place_pose.json
+```
+
+分拣程序会在运动到投放位置时将第6关节强制设为夹紧角，因此真正决定投放位置的是读取结果中的关节1至5。
