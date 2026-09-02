@@ -280,7 +280,7 @@ class Yolov11GraspNode(Node):
         print("pose_T: ", pose_T)
 
         request = Kinemarics.Request()
-        request.tar_x = pose_T[0] + 0.02
+        request.tar_x = pose_T[0]
         request.tar_y = pose_T[1]
         request.tar_z = pose_T[2]
         request.kin_name = "ik"

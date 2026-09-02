@@ -1,3 +1,6 @@
+# Exact copy of the effective Jetson install-space configuration reported on
+# 2026-09-02 before the next offset adjustment.
+
 # Robot/world-frame grasp compensation, in metres.
 # The former +0.020 m X correction in grasp() is now included here, so
 # each Cartesian-axis correction is applied exactly once.
