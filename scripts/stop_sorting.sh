@@ -26,6 +26,13 @@ elif [ "$(id -u)" -eq 0 ]; then
     else
         echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
     fi
+elif [ -n "${DOFBOT_SUDO_PASSWORD:-}" ]; then
+    if printf '%s\n' "$DOFBOT_SUDO_PASSWORD" | \
+            sudo -S -p '' bash "$GPIO_SETUP"; then
+        echo "  [GPIO] 引脚复用配置完成"
+    else
+        echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
+    fi
 elif sudo -n true 2>/dev/null; then
     if sudo -n bash "$GPIO_SETUP"; then
         echo "  [GPIO] 引脚复用配置完成"
@@ -33,11 +40,7 @@ elif sudo -n true 2>/dev/null; then
         echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
     fi
 else
-    if sudo -S -p '' bash "$GPIO_SETUP"; then
-        echo "  [GPIO] 引脚复用配置完成"
-    else
-        echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
-    fi
+    echo "  [警告] 未提供sudo凭据，将直接尝试发送停止脉冲"
 fi
 echo ""
 

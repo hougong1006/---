@@ -20,6 +20,7 @@ import json
 import subprocess
 import yaml
 import threading
+import shlex
 from datetime import datetime
 from collections import deque
 
@@ -213,13 +214,12 @@ class SSHCmdWorker(QThread):
     log_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str)  # 'started' / 'finished' / 'error:xxx'
 
-    def __init__(self, host, user, password, cmd, stdin_data=None):
+    def __init__(self, host, user, password, cmd):
         super().__init__()
         self.host = host
         self.user = user
         self.password = password
         self.cmd = cmd
-        self.stdin_data = stdin_data
         self._running = True
 
     @staticmethod
@@ -245,8 +245,6 @@ class SSHCmdWorker(QThread):
             channel = transport.open_session()
             channel.get_pty()  # allocate pseudo-tty so sudo prompts work
             channel.exec_command(self.cmd)
-            if self.stdin_data:
-                channel.send(self.stdin_data)
             channel.settimeout(1.0)
             byte_buf = b''
             while self._running:
@@ -1556,15 +1554,17 @@ class ArmMonitorWindow(QMainWindow):
         self.label_sys_status.setStyleSheet("color: #f59e0b;")
         self.add_log("[SYS] Stopping sortation system...")
 
-        cmd = "bash ~/stop_sorting.sh"
+        if _SSH_PASSWORD:
+            sudo_value = shlex.quote(_SSH_PASSWORD)
+            cmd = f"DOFBOT_SUDO_PASSWORD={sudo_value} bash ~/stop_sorting.sh"
+        else:
+            cmd = "bash ~/stop_sorting.sh"
 
         if _IS_LOCAL:
             self._cmd_worker = LocalCmdWorker(cmd)
         else:
             host = self.ip_input.text().strip()
-            self._cmd_worker = SSHCmdWorker(
-                host, _SSH_USER, _SSH_PASSWORD, cmd,
-                stdin_data=(_SSH_PASSWORD + '\n') if _SSH_PASSWORD else None)
+            self._cmd_worker = SSHCmdWorker(host, _SSH_USER, _SSH_PASSWORD, cmd)
 
         self._cmd_worker.log_signal.connect(self._on_cmd_log)
         self._cmd_worker.status_signal.connect(self._on_stop_status)
