@@ -105,7 +105,7 @@ class Yolov11GraspNode(Node):
         self.GRIPPER_APPROACH_ANGLE = 100.0
         self.GRIPPER_CLOSED_ANGLE = 165.0
         self.GRIPPER_RELEASE_ANGLE = 30.0
-        self.POST_GRASP_LIFT_HEIGHT = 0.03
+        self.POST_GRASP_LIFT_HEIGHT = 0.05
         self.depth_bridge = CvBridge()
         self.start_sort = False
         self.CurEndPos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
