@@ -95,7 +95,7 @@ class Yolov11GraspNode(Node):
         self.gripper_joint = 90.0
         # Joint6: smaller angles open the gripper. Pre-close it at a safe
         # height before descending into the tray, then keep this width fixed.
-        self.GRIPPER_APPROACH_ANGLE = 60.0
+        self.GRIPPER_APPROACH_ANGLE = 70.0
         self.GRIPPER_CLOSED_ANGLE = 150.0
         self.GRIPPER_RELEASE_ANGLE = 30.0
         self.depth_bridge = CvBridge()
@@ -138,7 +138,7 @@ class Yolov11GraspNode(Node):
         # ===== 分拣物品：3类菌菇（标签顺序: 0=chengshujinju, 1=fulanjinju, 2=qingjinju）=====
         self.sort_items = {
             'biaozhunketi': {'joint': [178, 59, 20, 59, 90, 30], 'id': 1},  # 标准件
-            'quexianketi': {'joint': [222, 12, 72, 75, 89, 29], 'id': 2},   # 缺陷件
+            'quexianketi': {'joint': [180, 12, 72, 75, 89, 29], 'id': 2},   # 缺陷件
         }
         self.Arm.Arm_serial_servo_write6_array(self.init_joints, 2000)
         print("Current_End_Pose: ", self.CurEndPos)
@@ -211,6 +211,20 @@ class Yolov11GraspNode(Node):
         print(f"[安全联锁] 归位校验超时，目标={expected}, "
               f"最后读数={last_readings}")
         return False
+
+    @staticmethod
+    def validate_place_joint(joints):
+        """Reject poses that Arm_Lib would otherwise ignore silently."""
+        if len(joints) != 6:
+            raise ValueError(f"投放姿态必须包含6个关节角度，当前={joints}")
+        limits = ((0, 180), (0, 180), (0, 180),
+                  (0, 180), (0, 270), (0, 180))
+        for joint_id, (angle, (minimum, maximum)) in enumerate(
+                zip(joints, limits), start=1):
+            if not minimum <= float(angle) <= maximum:
+                raise ValueError(
+                    f"投放姿态关节{joint_id}超限: {angle}°，"
+                    f"允许范围={minimum}～{maximum}°")
 
     def stopConveyorServiceCallback(self, _request, response):
         """Stop the conveyor from the GPIO-owning process and acknowledge it."""
@@ -441,6 +455,8 @@ class Yolov11GraspNode(Node):
         # 先用夹紧状态运动到放置位置（Joint6保持150夹紧）
         place_joint = list(self.set_joint)
         place_joint[5] = self.GRIPPER_CLOSED_ANGLE
+        self.validate_place_joint(place_joint)
+        print(f"[投放] 目标关节角度校验通过: {place_joint}")
         self.Arm.Arm_serial_servo_write6_array(place_joint, 1200)
         time.sleep(1.5)
         # 到位后再松开夹爪
