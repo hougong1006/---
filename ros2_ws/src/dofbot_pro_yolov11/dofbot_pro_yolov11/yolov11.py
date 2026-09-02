@@ -84,6 +84,9 @@ class Yolov11DetectNode(Node):
         self.VOTE_THRESHOLD = 10     # 至少N帧一致才发布
         self.no_detect_count = 0    # 连续无检测帧计数
         self.MAX_NO_DETECT = 2      # 连续无检测超过此值则清空缓冲区
+        self.DEFECT_TRACK_MAX_DISTANCE = 90
+        self.last_defect_center = None
+        self.redetect_reference = None
         # 只在相机正视区域内进行最终判定。工件从右向左运动，进入或
         # 离开画面时穿线孔容易因透视和凹槽遮挡产生误判。
         self.ROI_LEFT = 120
@@ -167,6 +170,33 @@ class Yolov11DetectNode(Node):
                     f"hits={track['hits']}")
                 track['counted'] = True
 
+    def _select_defect_candidate(self, candidates):
+        """Select one spatially consistent defect from a multi-object tray."""
+        if not candidates:
+            return None
+
+        if self.vote_buffer:
+            reference_x = self.vote_buffer[-1]['cx']
+            reference_y = self.vote_buffer[-1]['cy']
+        elif self.redetect_reference is not None:
+            reference_x, reference_y = self.redetect_reference
+        else:
+            roi_center_x = (self.ROI_LEFT + self.ROI_RIGHT) / 2.0
+            return min(
+                candidates,
+                key=lambda item: (abs(item['cx'] - roi_center_x),
+                                  -item['confidence']))
+
+        selected = min(
+            candidates,
+            key=lambda item: ((item['cx'] - reference_x) ** 2 +
+                              (item['cy'] - reference_y) ** 2))
+        distance_sq = ((selected['cx'] - reference_x) ** 2 +
+                       (selected['cy'] - reference_y) ** 2)
+        if distance_sq > self.DEFECT_TRACK_MAX_DISTANCE ** 2:
+            return None
+        return selected
+
     def auto_start_callback(self):
         """上电后自动开始检测，无需按空格"""
         self.auto_start_timer.cancel()
@@ -199,8 +229,8 @@ class Yolov11DetectNode(Node):
                     0.55, (0, 255, 255), 2)
 
         detected_this_frame = False
-        defect_processed_this_frame = False
         standard_detections = []
+        defect_candidates = []
         scan_active = self.start_flag
         if boxes != [None] and scan_active:
             for box in boxes:
@@ -226,15 +256,6 @@ class Yolov11DetectNode(Node):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                                 (0, 255, 255), 2)
 
-                    # 工件从左侧离开有效区时，丢弃尚未完成的缺陷投票，
-                    # 防止孔洞被凹槽侧壁遮挡后累积成错误抓取指令。
-                    if (class_name == 'quexianketi' and
-                            x_min < self.ROI_LEFT and self.vote_buffer):
-                        self.get_logger().info(
-                            f"[ROI重置] 目标离开左侧有效区，清空缺陷投票"
-                            f"({len(self.vote_buffer)}帧)")
-                        self.vote_buffer = []
-                        self.no_detect_count = 0
                     continue
 
                 if class_name == 'biaozhunketi':
@@ -246,50 +267,63 @@ class Yolov11DetectNode(Node):
                 if class_name != 'quexianketi':
                     continue
 
-                # 每帧最多向缺陷投票缓冲写入一个目标，但继续遍历其余检测框，
-                # 确保同一画面内的所有标准件都能进入独立跟踪。
-                if defect_processed_this_frame:
-                    continue
-                defect_processed_this_frame = True
-
-                detected_this_frame = True
-                self.no_detect_count = 0
-
-                # ===== 多帧投票：累积检测结果 =====
-                self.vote_buffer.append({
+                defect_candidates.append({
                     'name': class_name,
                     'cx': float(center_x),
-                    'cy': float(center_y)
+                    'cy': float(center_y),
+                    'confidence': confidence,
+                    'x_min': x_min,
+                    'y_min': y_min,
                 })
 
-                vote_info = f"[投票 {len(self.vote_buffer)}/{self.VOTE_FRAMES}] {class_name}"
-                cv2.putText(annotated_frame, vote_info, (x_min, y_min - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
-                cv2.putText(annotated_frame, label, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        if scan_active:
+            self._update_standard_tracks(standard_detections)
+
+            # 托盘内可能同时存在多个缺陷件。每帧只选择一个与上一帧位置
+            # 连续的目标投票，其他目标和ROI外目标不能清空当前目标的缓冲。
+            selected_defect = self._select_defect_candidate(defect_candidates)
+            if selected_defect is not None:
+                detected_this_frame = True
+                self.no_detect_count = 0
+                self.vote_buffer.append({
+                    'name': selected_defect['name'],
+                    'cx': selected_defect['cx'],
+                    'cy': selected_defect['cy'],
+                })
+
+                vote_info = (
+                    f"[投票 {len(self.vote_buffer)}/{self.VOTE_FRAMES}] "
+                    f"{selected_defect['name']}")
+                cv2.putText(
+                    annotated_frame, vote_info,
+                    (selected_defect['x_min'], selected_defect['y_min'] - 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
 
                 if len(self.vote_buffer) >= self.VOTE_FRAMES:
-                    # 投票：统计各类别出现次数
                     names = [v['name'] for v in self.vote_buffer]
                     counter = Counter(names)
                     most_common_name, count = counter.most_common(1)[0]
 
                     if count >= self.VOTE_THRESHOLD:
-                        # 投票通过！使用最新位置 + 投票结果发布
+                        latest = self.vote_buffer[-1]
                         self.get_logger().info(
-                            f"[投票通过] {most_common_name} ({count}/{self.VOTE_FRAMES}) 投票详情: {dict(counter)}")
+                            f"[投票通过] {most_common_name} "
+                            f"({count}/{self.VOTE_FRAMES}) "
+                            f"投票详情: {dict(counter)}")
                         center = Yolov11Detect()
-                        center.centerx = self.vote_buffer[-1]['cx']
-                        center.centery = self.vote_buffer[-1]['cy']
+                        center.centerx = latest['cx']
+                        center.centery = latest['cy']
                         center.result = most_common_name
+                        self.last_defect_center = (
+                            latest['cx'], latest['cy'])
                         self.pubDetect.publish(center)
                         self.start_flag = False
                         self.vote_buffer = []
                     else:
-                        # 未达成共识，移除最旧的一帧继续
                         self.get_logger().info(
-                            f"[投票未通过] 无共识 {dict(counter)}，滑动窗口继续...")
+                            f"[投票未通过] 无共识 {dict(counter)}，"
+                            "滑动窗口继续...")
                         self.vote_buffer.pop(0)
-        if scan_active:
-            self._update_standard_tracks(standard_detections)
 
         # 未检测到目标时：连续无检测超过阈值则清空投票缓冲
         if not detected_this_frame and self.start_flag == True:
@@ -341,6 +375,7 @@ class Yolov11DetectNode(Node):
             self.get_logger().info("[重检测] 收到信号，重新启用检测以获取精确位置")
             self.vote_buffer = []  # 清空投票，重新开始
             self.no_detect_count = 0
+            self.redetect_reference = self.last_defect_center
             self.start_flag = True
 
     def _restart_detection(self):
@@ -349,6 +384,8 @@ class Yolov11DetectNode(Node):
         self.get_logger().info(">>> 开始下一轮检测 <<<")
         self.vote_buffer = []  # 新一轮检测，清空投票
         self.no_detect_count = 0
+        self.redetect_reference = None
+        self.last_defect_center = None
         start_flag = Bool()
         start_flag.data = True
         self.pub_SortFlag.publish(start_flag)

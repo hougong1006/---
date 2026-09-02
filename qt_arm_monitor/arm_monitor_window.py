@@ -1790,6 +1790,12 @@ class ArmMonitorWindow(QMainWindow):
                 display = self._translate_name(raw_name)
                 self.update_grasp_status(obj_name=display, status=_TX['DET'], conveyor=_TX['STOP'])
                 self.update_detection_stats(cur_obj=display)
+                # 检测统计以Phase1确认事件为准，而不是等机械臂完成抓取。
+                # 每个分拣周期只产生一次Phase1，避免Phase2复检重复计数。
+                if raw_name in ('quexianketi', 'quexian', 'fulanjinju'):
+                    self._sort_rotten += 1
+                    self._sort_total += 1
+                    self._update_counts()
             return
 
         # --- 投票通过: 多帧投票确认的检测结果 ---
@@ -1812,19 +1818,13 @@ class ArmMonitorWindow(QMainWindow):
                 self._update_counts()
             return
 
-        # --- 分拣分类: 统计各类别计数 ---
+        # --- 分拣分类: 仅更新当前对象；计数已在检测确认时完成 ---
         if '分拣:' in line and '位置 ID=' in line:
             m = re.search(r'分拣: (\S+)\s', line)
             if m:
                 name = m.group(1)
-                if name in ('biaozhunketi', 'biaozhun', 'chengshujinju'):
-                    self._sort_ripe += 1
-                elif name in ('quexianketi', 'quexian', 'fulanjinju'):
-                    self._sort_rotten += 1
-                elif name == 'qingjinju':
-                    self._sort_green += 1
-                self._sort_total += 1
-                self._update_counts()
+                self.update_detection_stats(
+                    cur_obj=self._translate_name(name))
             return
 
         # --- 3D坐标: pose_T ---
