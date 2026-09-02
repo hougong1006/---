@@ -105,6 +105,7 @@ class Yolov11GraspNode(Node):
         self.GRIPPER_APPROACH_ANGLE = 100.0
         self.GRIPPER_CLOSED_ANGLE = 165.0
         self.GRIPPER_RELEASE_ANGLE = 30.0
+        self.POST_GRASP_LIFT_HEIGHT = 0.03
         self.depth_bridge = CvBridge()
         self.start_sort = False
         self.CurEndPos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -480,10 +481,8 @@ class Yolov11GraspNode(Node):
             print(f"[错误恢复] 报警灯状态复位失败: {exc}")
         print("[错误恢复] 已进入安全停机状态，请排查后重新启动系统")
 
-    def grasp(self, pose_T):
-        print("------------------------------------------------")
-        print("pose_T: ", pose_T)
-
+    def solve_ik_joints(self, pose_T, gripper_angle):
+        """Solve one Cartesian target and return a six-joint arm command."""
         request = Kinemarics.Request()
         request.tar_x = pose_T[0]
         request.tar_y = pose_T[1]
@@ -491,33 +490,37 @@ class Yolov11GraspNode(Node):
         request.kin_name = "ik"
         request.roll = -1.0
 
+        future = self.client.call_async(request)
+        # Poll instead of spinning this node from its worker thread.
+        start_time = time.time()
+        while not future.done():
+            time.sleep(0.02)
+            if time.time() - start_time > 5.0:
+                raise RuntimeError("IK服务调用超时(5s)")
+
+        response = future.result()
+        if response is None:
+            raise RuntimeError("IK服务返回None")
+
+        joints = [
+            response.joint1,
+            response.joint2,
+            response.joint3,
+            min(response.joint4, 90.0),
+            90.0,
+            float(gripper_angle),
+        ]
+        if not all(np.isfinite(float(angle)) for angle in joints):
+            raise RuntimeError(f"IK结果包含无效关节角: {joints}")
+        return joints
+
+    def grasp(self, pose_T):
+        print("------------------------------------------------")
+        print("pose_T: ", pose_T)
+
         try:
-            future = self.client.call_async(request)
-            # 轮询等待 IK 结果，不使用 spin_until_future_complete（避免破坏主线程执行器）
-            start_time = time.time()
-            while not future.done():
-                time.sleep(0.02)
-                if time.time() - start_time > 5.0:
-                    print("[错误] IK 服务调用超时(5s)")
-                    self._reset_for_next_cycle()
-                    return
-
-            response = future.result()
-            if response is None:
-                print("[错误] IK 服务返回 None")
-                self._reset_for_next_cycle()
-                return
-
-            joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            joints[0] = response.joint1
-            joints[1] = response.joint2
-            joints[2] = response.joint3
-            if response.joint4 > 90:
-                joints[3] = 90
-            else:
-                joints[3] = response.joint4
-            joints[4] = 90
-            joints[5] = self.GRIPPER_APPROACH_ANGLE
+            joints = self.solve_ik_joints(
+                pose_T, self.GRIPPER_APPROACH_ANGLE)
 
             # 先在托盘上方收至安全开度，避免夹爪以最大开度边下落边收拢。
             self.Arm.Arm_serial_servo_write(
@@ -525,22 +528,28 @@ class Yolov11GraspNode(Node):
             time.sleep(0.5)
             self.pubTargetArm(joints, runtime=1500)
             time.sleep(1.8)
-            self.move()
+            self.move(pose_T)
 
         except Exception as e:
             print(f"[错误] 夹取过程异常: {e}")
             self._reset_for_next_cycle()
 
-    def move(self):
+    def move(self, grasp_pose):
 
         self.Arm.Arm_serial_servo_write(5, self.gripper_joint, 500)
         time.sleep(0.5)
         self.Arm.Arm_serial_servo_write(
             6, self.GRIPPER_CLOSED_ANGLE, 600)
         time.sleep(0.7)
-        self.Arm.Arm_serial_servo_write6(
-            90.0, 120.0, 0.0, 0.0, 90.0,
-            self.GRIPPER_CLOSED_ANGLE, 1000)
+
+        # Keep X/Y unchanged and lift along world Z before any transfer move.
+        lift_pose = np.asarray(grasp_pose, dtype=float).copy()
+        lift_pose[2] += self.POST_GRASP_LIFT_HEIGHT
+        lift_joints = self.solve_ik_joints(
+            lift_pose, self.GRIPPER_CLOSED_ANGLE)
+        print(f"[夹取] 已夹紧，原地向上抬升"
+              f"{self.POST_GRASP_LIFT_HEIGHT * 1000:.0f} mm: {lift_joints}")
+        self.pubTargetArm(lift_joints, runtime=1000)
         time.sleep(1.2)
         print("name",self.name)
 
