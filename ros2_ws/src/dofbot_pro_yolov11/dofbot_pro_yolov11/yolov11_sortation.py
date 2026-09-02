@@ -120,6 +120,11 @@ class Yolov11GraspNode(Node):
         self.detected_name = None       # Phase1记住的物体名称
         self.external_stop_requested = False
         self.gpio_lock = threading.Lock()
+        self.conveyor_start_permitted = False
+        self.HOME_VERIFY_JOINT_IDS = (1, 2, 3, 5)
+        self.HOME_VERIFY_TOLERANCE = 8.0
+        self.HOME_VERIFY_TIMEOUT = 6.0
+        self.HOME_VERIFY_STABLE_READS = 2
 
         # The process owning BCM6 handles the stop pulse. This avoids a second
         # Jetson.GPIO process failing with "Device or resource busy".
@@ -149,6 +154,9 @@ class Yolov11GraspNode(Node):
 
     def send_start_conveyor(self):
         """BCM13 短脉冲 → STM32 PA1(EXTI边沿触发) → 启动传送带"""
+        if not self.conveyor_start_permitted:
+            print("[安全联锁] 机械臂尚未确认归位，拒绝发送传送带启动信号")
+            return False
         if self.external_stop_requested:
             print("[传送带] 系统停止锁定生效，忽略启动信号")
             return False
@@ -162,6 +170,47 @@ class Yolov11GraspNode(Node):
             time.sleep(0.05)
             GPIO.output(BCM_START, GPIO.LOW)
         return True
+
+    def wait_until_home(self):
+        """Require stable joint feedback before allowing the conveyor to start."""
+        expected = {
+            joint_id: float(self.init_joints[joint_id - 1])
+            for joint_id in self.HOME_VERIFY_JOINT_IDS
+        }
+        deadline = time.time() + self.HOME_VERIFY_TIMEOUT
+        stable_reads = 0
+        last_readings = {}
+
+        while time.time() < deadline:
+            readings = {}
+            valid = True
+            for joint_id, target in expected.items():
+                try:
+                    actual = self.Arm.Arm_serial_servo_read(joint_id)
+                except Exception as exc:
+                    print(f"[归位校验] 读取关节{joint_id}异常: {exc}")
+                    actual = None
+                readings[joint_id] = actual
+                if (actual is None or
+                        abs(float(actual) - target) >
+                        self.HOME_VERIFY_TOLERANCE):
+                    valid = False
+                time.sleep(0.02)
+
+            last_readings = readings
+            if valid:
+                stable_reads += 1
+                if stable_reads >= self.HOME_VERIFY_STABLE_READS:
+                    print(f"[归位校验] 连续{stable_reads}次校验通过: "
+                          f"{readings}")
+                    return True
+            else:
+                stable_reads = 0
+            time.sleep(0.2)
+
+        print(f"[安全联锁] 归位校验超时，目标={expected}, "
+              f"最后读数={last_readings}")
+        return False
 
     def stopConveyorServiceCallback(self, _request, response):
         """Stop the conveyor from the GPIO-owning process and acknowledge it."""
@@ -298,24 +347,22 @@ class Yolov11GraspNode(Node):
         self.gripper_joint = msg.data
 
     def _reset_for_next_cycle(self):
-        """异常恢复：重置所有状态，启动传送带，发布 grasp_done"""
-        print("[错误恢复] 正在重置状态...")
+        """Fail safe on errors: keep the conveyor stopped for manual recovery."""
+        print("[错误恢复] 抓取流程异常，保持传送带停止...")
+        self.conveyor_start_permitted = False
         try:
-            conveyor_started = self.send_start_conveyor()
-        except Exception:
-            conveyor_started = False
-        self.conveyor_stopped = not conveyor_started
-        self.grasp_flag = not self.external_stop_requested
+            self.send_stop_conveyor()
+        except Exception as exc:
+            print(f"[错误恢复] 传送带停止信号发送失败: {exc}")
+        self.conveyor_stopped = True
+        self.grasp_flag = False
         self.name = None
         self.cx = 0
         self.cy = 0
         self.start_sort = False
         self.waiting_redetect = False
         self.detected_name = None
-        grasp_done = Bool()
-        grasp_done.data = True
-        self.pubGraspStatus.publish(grasp_done)
-        print("[错误恢复] 状态已重置，等待下一轮分拣")
+        print("[错误恢复] 已进入安全停机状态，请排查后重新启动系统")
 
     def grasp(self, pose_T):
         print("------------------------------------------------")
@@ -417,13 +464,25 @@ class Yolov11GraspNode(Node):
         print("[夹取] 放置完成，等待机械臂归位...")
         time.sleep(1.8)
 
-        # ===== 归位到位后，启动传送带 =====
-        if self.send_start_conveyor():
+        # ===== 读取关节反馈，确认稳定归位后才允许启动传送带 =====
+        home_confirmed = self.wait_until_home()
+        self.conveyor_start_permitted = home_confirmed
+        if home_confirmed and self.send_start_conveyor():
             self.conveyor_stopped = False
-            print("[传送带] 机械臂已归位，传送带启动")
+            print("[传送带] 机械臂归位校验通过，传送带启动")
         else:
             self.conveyor_stopped = True
-            print("[传送带] 系统停止锁定，归位后保持传送带停止")
+            try:
+                self.send_stop_conveyor()
+            except Exception as exc:
+                print(f"[安全联锁] 补发停止信号失败: {exc}")
+            print("[传送带] 未满足启动条件，保持传送带停止")
+        self.conveyor_start_permitted = False
+
+        if self.conveyor_stopped:
+            self.grasp_flag = False
+            print("[安全联锁] 本轮未安全完成，不发布下一轮检测信号")
+            return
 
         # 重置所有状态
         self.name = None
