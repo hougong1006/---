@@ -3,7 +3,7 @@
 # ============================================================
 # 修改说明：
 #   1. 去掉空格键手动触发，改为上电后自动开始检测
-#   2. grasp_done 回调中自动重启下一轮检测（0.1秒延迟）
+#   2. grasp_done 回调中自动重启下一轮检测
 #   3. 支持重检测信号：Phase1停带后触发一次精确重检测
 #   4. 未检测到目标时保持扫描（不停止）
 #   5. 缺陷件使用15帧/10票确认；标准件使用多目标跟踪过线计数
@@ -67,7 +67,7 @@ class Yolov11DetectNode(Node):
         self.pr_time = time.time()
         self.image_sub = self.create_subscription(ImageMsg, "/image_data", self.image_sub_callback, qos_profile=1)
         self.img = np.zeros((480, 640, 3), dtype=np.uint8)
-        self.init_joints = [90.0, 113.0, 29.0, -18.0, 90.0, 30.0]
+        self.init_joints = [89.0, 56.0, 94.0, -36.0, 90.0, 30.0]
         self.pubPoint = self.create_publisher(ArmJoint, "TargetAngle", 10)
         self.pubDetect = self.create_publisher(Yolov11Detect, "Yolov11DetectInfo", 10)
         self.pub_SortFlag = self.create_publisher(Bool, 'sort_flag', 10)
@@ -82,6 +82,9 @@ class Yolov11DetectNode(Node):
         self.vote_buffer = []       # 投票缓冲区: [{'name': str, 'cx': float, 'cy': float}, ...]
         self.VOTE_FRAMES =15         # 累积帧数
         self.VOTE_THRESHOLD = 10     # 至少N帧一致才发布
+        self.REDETECT_VOTE_FRAMES = 5
+        self.REDETECT_VOTE_THRESHOLD = 3
+        self.REDETECT_RECOVERY_DELAY = 2.0
         self.no_detect_count = 0    # 连续无检测帧计数
         self.MAX_NO_DETECT = 2      # 连续无检测超过此值则清空缓冲区
         self.DEFECT_TRACK_MAX_DISTANCE = 90
@@ -232,6 +235,7 @@ class Yolov11DetectNode(Node):
         standard_detections = []
         defect_candidates = []
         scan_active = self.start_flag
+        redetect_mode = self.redetect_reference is not None
         if boxes != [None] and scan_active:
             for box in boxes:
                 x_min, y_min, x_max, y_max = map(int, box.xyxy[0])
@@ -242,10 +246,19 @@ class Yolov11DetectNode(Node):
                 center_x = (x_min + x_max) // 2
                 center_y = (y_min + y_max) // 2
 
-                # 整个检测框必须位于有效区内。右侧刚进入或左侧即将离开时，
-                # 只显示检测结果，不计数、不投票、不发送抓取坐标。
-                box_in_roi = (x_min >= self.ROI_LEFT and
-                              x_max <= self.ROI_RIGHT)
+                # Phase1 requires the full box in the perspective-safe ROI.
+                # After a confirmed stop, momentum may leave part of that box
+                # outside the boundary, so Phase2 accepts a matching defect
+                # whose center remains inside the ROI.
+                redetecting_defect = (
+                    redetect_mode and
+                    class_name == 'quexianketi'
+                )
+                if redetecting_defect:
+                    box_in_roi = self.ROI_LEFT <= center_x <= self.ROI_RIGHT
+                else:
+                    box_in_roi = (x_min >= self.ROI_LEFT and
+                                  x_max <= self.ROI_RIGHT)
                 if not box_in_roi:
                     cv2.putText(annotated_frame, label,
                                 (x_min, max(18, y_min - 10)),
@@ -259,8 +272,9 @@ class Yolov11DetectNode(Node):
                     continue
 
                 if class_name == 'biaozhunketi':
-                    standard_detections.append(
-                        (float(center_x), float(center_y)))
+                    if not redetect_mode:
+                        standard_detections.append(
+                            (float(center_x), float(center_y)))
                     continue
 
                 # Only defective parts enter voting, stop-belt and grasp flow.
@@ -277,7 +291,8 @@ class Yolov11DetectNode(Node):
                 })
 
         if scan_active:
-            self._update_standard_tracks(standard_detections)
+            if not redetect_mode:
+                self._update_standard_tracks(standard_detections)
 
             # 托盘内可能同时存在多个缺陷件。每帧只选择一个与上一帧位置
             # 连续的目标投票，其他目标和ROI外目标不能清空当前目标的缓冲。
@@ -291,24 +306,34 @@ class Yolov11DetectNode(Node):
                     'cy': selected_defect['cy'],
                 })
 
+                required_frames = (
+                    self.REDETECT_VOTE_FRAMES
+                    if redetect_mode
+                    else self.VOTE_FRAMES
+                )
+                required_threshold = (
+                    self.REDETECT_VOTE_THRESHOLD
+                    if redetect_mode
+                    else self.VOTE_THRESHOLD
+                )
                 vote_info = (
-                    f"[投票 {len(self.vote_buffer)}/{self.VOTE_FRAMES}] "
+                    f"[投票 {len(self.vote_buffer)}/{required_frames}] "
                     f"{selected_defect['name']}")
                 cv2.putText(
                     annotated_frame, vote_info,
                     (selected_defect['x_min'], selected_defect['y_min'] - 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
 
-                if len(self.vote_buffer) >= self.VOTE_FRAMES:
+                if len(self.vote_buffer) >= required_frames:
                     names = [v['name'] for v in self.vote_buffer]
                     counter = Counter(names)
                     most_common_name, count = counter.most_common(1)[0]
 
-                    if count >= self.VOTE_THRESHOLD:
+                    if count >= required_threshold:
                         latest = self.vote_buffer[-1]
                         self.get_logger().info(
                             f"[投票通过] {most_common_name} "
-                            f"({count}/{self.VOTE_FRAMES}) "
+                            f"({count}/{required_frames}) "
                             f"投票详情: {dict(counter)}")
                         center = Yolov11Detect()
                         center.centerx = latest['cx']
@@ -319,6 +344,7 @@ class Yolov11DetectNode(Node):
                         self.pubDetect.publish(center)
                         self.start_flag = False
                         self.vote_buffer = []
+                        self.redetect_reference = None
                     else:
                         self.get_logger().info(
                             f"[投票未通过] 无共识 {dict(counter)}，"
@@ -364,10 +390,23 @@ class Yolov11DetectNode(Node):
         self.pubPoint.publish(arm_joint)
 
     def GraspStatusCallback(self, msg):
-        """夹取完成 → 极短延迟后立即开始下一轮检测"""
-        if msg.data == True:
+        """Resume detection after a normal grasp or a redetect recovery."""
+        if hasattr(self, 'restart_timer'):
+            self.restart_timer.cancel()
+
+        if msg.data:
+            delay = 0.1
             self.get_logger().info("夹取完成！0.1秒后开始下一轮检测...")
-            self.restart_timer = self.create_timer(0.1, self._restart_detection)
+        else:
+            delay = self.REDETECT_RECOVERY_DELAY
+            self.start_flag = False
+            self.vote_buffer = []
+            self.no_detect_count = 0
+            self.redetect_reference = None
+            self.last_defect_center = None
+            self.get_logger().warning(
+                f"[重检测恢复] 传送带已重新启动，{delay:.1f}秒后恢复检测")
+        self.restart_timer = self.create_timer(delay, self._restart_detection)
 
     def RedetectCallback(self, msg):
         """Phase1停带后 → 立即重新启用检测，获取物体静止后的精确位置"""

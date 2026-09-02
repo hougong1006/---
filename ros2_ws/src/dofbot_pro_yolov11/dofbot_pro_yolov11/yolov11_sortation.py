@@ -102,7 +102,7 @@ class Yolov11GraspNode(Node):
         self.gripper_joint = 90.0
         # Joint6: smaller angles open the gripper. Pre-close it at a safe
         # height before descending into the tray, then keep this width fixed.
-        self.GRIPPER_APPROACH_ANGLE = 90.0
+        self.GRIPPER_APPROACH_ANGLE = 100.0
         self.GRIPPER_CLOSED_ANGLE = 165.0
         self.GRIPPER_RELEASE_ANGLE = 30.0
         self.depth_bridge = CvBridge()
@@ -132,6 +132,11 @@ class Yolov11GraspNode(Node):
         self.HOME_VERIFY_TOLERANCE = 8.0
         self.HOME_VERIFY_TIMEOUT = 6.0
         self.HOME_VERIFY_STABLE_READS = 2
+        self.REDETECT_TIMEOUT = 4.0
+        self.redetect_started_at = None
+        self.redetect_recovery_active = False
+        self.redetect_watchdog = self.create_timer(
+            0.2, self.check_redetect_timeout)
 
         # The process owning BCM6 handles the stop pulse. This avoids a second
         # Jetson.GPIO process failing with "Device or resource busy".
@@ -262,6 +267,7 @@ class Yolov11GraspNode(Node):
         self.start_sort = False
         self.grasp_flag = False
         self.waiting_redetect = False
+        self.redetect_started_at = None
         try:
             self.send_stop_conveyor()
             self.set_indicator_off()
@@ -274,6 +280,63 @@ class Yolov11GraspNode(Node):
             response.message = str(exc)
             print(f"[警告] 系统停止服务发送BCM6失败: {exc}")
         return response
+
+    def check_redetect_timeout(self):
+        """Recover if a stopped edge target cannot pass Phase2 confirmation."""
+        if (not self.waiting_redetect or
+                self.redetect_started_at is None or
+                self.external_stop_requested or
+                self.redetect_recovery_active):
+            return
+        elapsed = time.monotonic() - self.redetect_started_at
+        if elapsed < self.REDETECT_TIMEOUT:
+            return
+
+        self.waiting_redetect = False
+        self.redetect_started_at = None
+        self.redetect_recovery_active = True
+        print(f"[Phase2超时] {self.REDETECT_TIMEOUT:.1f}秒内未取得可靠复检结果，"
+              "准备安全恢复传送带")
+        threading.Thread(
+            target=self.recover_from_redetect_timeout, daemon=True).start()
+
+    def recover_from_redetect_timeout(self):
+        """Verify the arm is home before restarting a timed-out conveyor."""
+        try:
+            if self.external_stop_requested:
+                print("[重检测恢复] 系统停止锁定生效，保持传送带停止")
+                return
+
+            home_confirmed = self.wait_until_home()
+            self.conveyor_start_permitted = home_confirmed
+            if not home_confirmed or not self.send_start_conveyor():
+                self.conveyor_stopped = True
+                self.grasp_flag = False
+                print("[重检测恢复] 机械臂归位校验或启动信号失败，保持安全停机")
+                return
+
+            self.conveyor_stopped = False
+            self.start_sort = False
+            self.grasp_flag = True
+            self.name = None
+            self.cx = 0
+            self.cy = 0
+            self.detected_name = None
+            self.set_indicator_running()
+
+            # False means no grasp occurred. YOLO delays re-arming so the
+            # unconfirmed edge target can leave the ROI without retriggering.
+            recovery = Bool()
+            recovery.data = False
+            self.pubGraspStatus.publish(recovery)
+            print("[重检测恢复] 传送带已启动，等待边缘目标离开后恢复检测")
+        except Exception as exc:
+            self.conveyor_stopped = True
+            self.grasp_flag = False
+            print(f"[重检测恢复] 异常，保持传送带停止: {exc}")
+        finally:
+            self.conveyor_start_permitted = False
+            self.redetect_recovery_active = False
 
     def do_grasp(self, cx, cy, name, dist):
         """Phase2: 传送带已停止，使用重新检测的精确坐标进行夹取"""
@@ -316,6 +379,7 @@ class Yolov11GraspNode(Node):
                 self.cy = 0
                 self.name = None
                 self.waiting_redetect = True
+                self.redetect_started_at = time.monotonic()
                 # 通知YOLO重新检测一次
                 redetect = Bool()
                 redetect.data = True
@@ -351,6 +415,7 @@ class Yolov11GraspNode(Node):
                 if self.waiting_redetect:
                     # ===== Phase2: 传送带已停止，收到重新检测的精确坐标+深度 → 夹取 =====
                     self.waiting_redetect = False
+                    self.redetect_started_at = None
                     print(f"[Phase2] 重新检测: {self.name} ({self.cx},{self.cy}) d={self.dist:.3f}m r={used_r} → 开始夹取")
                     threading.Thread(target=self.do_grasp,
                                      args=(self.cx, self.cy, self.name, self.dist)).start()
@@ -407,6 +472,7 @@ class Yolov11GraspNode(Node):
         self.cy = 0
         self.start_sort = False
         self.waiting_redetect = False
+        self.redetect_started_at = None
         self.detected_name = None
         try:
             self.set_indicator_off()
@@ -545,6 +611,7 @@ class Yolov11GraspNode(Node):
         self.start_sort = False
         self.grasp_flag = True  # 允许下一轮夹取
         self.waiting_redetect = False
+        self.redetect_started_at = None
         self.detected_name = None
 
         # 发布夹取完成信号，触发下一轮检测
