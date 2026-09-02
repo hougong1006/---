@@ -37,15 +37,22 @@ from Arm_Lib import Arm_Device
 # ==================== GPIO 初始化 ====================
 import Jetson.GPIO as GPIO
 
-# BCM编号：对应40pin排针的物理引脚
-BCM_STOP  = 6    # Pin 31 → STM32 PA0 → 停止传送带
-BCM_START = 13   # Pin 33 → STM32 PA1 → 启动传送带
+# 传送带控制板：50 ms脉冲控制启停
+BCM_STOP  = 6    # Pin 31 / GPIO11 → 传送带停止控制板
+BCM_START = 13   # Pin 33 / GPIO13 → 传送带启动控制板
+
+# 独立报警灯控制板：持续电平表示设备状态，与传送带控制板相互独立
+BCM_RUN_STATUS = 5       # Pin 29 / GPIO01 → 报警板STM32 PA0
+BCM_DEFECT_STATUS = 12   # Pin 32 / GPIO07 → 报警板STM32 PA1
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 GPIO.setup(BCM_STOP,  GPIO.OUT, initial=GPIO.LOW)
 GPIO.setup(BCM_START, GPIO.OUT, initial=GPIO.LOW)
-print("[GPIO] BCM6(停止) 和 BCM13(启动) 已配置为输出模式")
+GPIO.setup(BCM_RUN_STATUS, GPIO.OUT, initial=GPIO.LOW)
+GPIO.setup(BCM_DEFECT_STATUS, GPIO.OUT, initial=GPIO.LOW)
+print("[GPIO] 传送带控制: BCM6(停止)、BCM13(启动)")
+print("[GPIO] 报警状态输出: BCM5/GPIO01(运行)、BCM12/GPIO07(缺陷抓取)")
 # =====================================================
 
 pkg_path = get_package_share_directory('dofbot_pro_driver')
@@ -141,10 +148,33 @@ class Yolov11GraspNode(Node):
             'quexianketi': {'joint': [180, 12, 72, 75, 89, 29], 'id': 2},   # 缺陷件
         }
         self.Arm.Arm_serial_servo_write6_array(self.init_joints, 2000)
+        # 一键启动脚本已先启动传送带；分拣节点就绪后点亮绿灯。
+        self.set_indicator_running()
         print("Current_End_Pose: ", self.CurEndPos)
         print("Init Done")
 
     # ==================== GPIO 控制函数 ====================
+    def set_indicator_running(self):
+        """正常运行：GPIO01高，GPIO07低，报警板显示绿灯。"""
+        with self.gpio_lock:
+            GPIO.output(BCM_DEFECT_STATUS, GPIO.LOW)
+            GPIO.output(BCM_RUN_STATUS, GPIO.HIGH)
+        print("[报警灯] 正常运行：GPIO01=HIGH, GPIO07=LOW")
+
+    def set_indicator_defect(self):
+        """缺陷夹取：GPIO01低，GPIO07高，报警板点亮红灯并鸣响。"""
+        with self.gpio_lock:
+            GPIO.output(BCM_RUN_STATUS, GPIO.LOW)
+            GPIO.output(BCM_DEFECT_STATUS, GPIO.HIGH)
+        print("[报警灯] 缺陷夹取：GPIO01=LOW, GPIO07=HIGH")
+
+    def set_indicator_off(self):
+        """停机或异常：撤销两路状态信号。"""
+        with self.gpio_lock:
+            GPIO.output(BCM_RUN_STATUS, GPIO.LOW)
+            GPIO.output(BCM_DEFECT_STATUS, GPIO.LOW)
+        print("[报警灯] 停机：GPIO01=LOW, GPIO07=LOW")
+
     def send_stop_conveyor(self):
         """BCM6 短脉冲 → STM32 PA0(EXTI边沿触发) → 停止传送带"""
         with self.gpio_lock:
@@ -234,6 +264,7 @@ class Yolov11GraspNode(Node):
         self.waiting_redetect = False
         try:
             self.send_stop_conveyor()
+            self.set_indicator_off()
             self.conveyor_stopped = True
             response.success = True
             response.message = 'BCM6 stop pulse sent by sortation node'
@@ -277,6 +308,7 @@ class Yolov11GraspNode(Node):
                 self.grasp_flag = False  # 防止重入
                 self.detected_name = self.name
                 print(f"[Phase1] 检测到: {self.name} ({self.cx},{self.cy}) → 立即停带！")
+                self.set_indicator_defect()
                 self.send_stop_conveyor()  # 50ms GPIO脉冲，极速
                 self.conveyor_stopped = True
                 # 清除坐标，等待YOLO重新检测静止后的精确位置
@@ -376,6 +408,10 @@ class Yolov11GraspNode(Node):
         self.start_sort = False
         self.waiting_redetect = False
         self.detected_name = None
+        try:
+            self.set_indicator_off()
+        except Exception as exc:
+            print(f"[错误恢复] 报警灯状态复位失败: {exc}")
         print("[错误恢复] 已进入安全停机状态，请排查后重新启动系统")
 
     def grasp(self, pose_T):
@@ -486,6 +522,7 @@ class Yolov11GraspNode(Node):
         self.conveyor_start_permitted = home_confirmed
         if home_confirmed and self.send_start_conveyor():
             self.conveyor_stopped = False
+            self.set_indicator_running()
             print("[传送带] 机械臂归位校验通过，传送带启动")
         else:
             self.conveyor_stopped = True
@@ -595,6 +632,7 @@ def main(args=None):
         print("[传送带] 分拣节点退出，发送停止信号...")
         try:
             yolov11_grasp.send_stop_conveyor()
+            yolov11_grasp.set_indicator_off()
             print("[传送带] 退出停止信号已发送")
         except Exception as e:
             print(f"[警告] 退出停止信号发送失败: {e}")
@@ -603,6 +641,8 @@ def main(args=None):
         print("[GPIO] 清理 GPIO 资源...")
         GPIO.output(BCM_STOP, GPIO.LOW)
         GPIO.output(BCM_START, GPIO.LOW)
+        GPIO.output(BCM_RUN_STATUS, GPIO.LOW)
+        GPIO.output(BCM_DEFECT_STATUS, GPIO.LOW)
         GPIO.cleanup()
         yolov11_grasp.destroy_node()
         rclpy.shutdown()

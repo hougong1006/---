@@ -26,6 +26,21 @@ Thumbs.db
 *.save
 *~
 
+# Keil/MDK generated outputs and per-user settings
+*.o
+*.d
+*.crf
+*.axf
+*.hex
+*.bin
+*.map
+*.lnp
+*.htm
+*.uvguix.*
+*.dep
+*.sct
+MDK-ARM/RTE/
+
 # Generated intermediate model. The device runtime engine and source weights
 # are retained; ONNX can be regenerated from best.pt when needed.
 *.onnx
