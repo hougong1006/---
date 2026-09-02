@@ -4,6 +4,8 @@
 #  使用方法：bash ~/stop_sorting.sh
 # ============================================================
 
+set -u
+
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║  Dofbot Pro 3D视觉垃圾分拣 - 停止所有   ║"
@@ -11,6 +13,33 @@ echo "╚═══════════════════════�
 echo ""
 
 PID_FILE="/tmp/dofbot_sorting_pids.txt"
+GPIO_SETUP="$HOME/setup_gpio.sh"
+
+# The monitor runs this script through SSH. Configure pinmux before producing
+# the safety stop pulse; sudo reads its password from the existing SSH PTY.
+echo "[GPIO] 检查传送带停止引脚复用..."
+if [ ! -f "$GPIO_SETUP" ]; then
+    echo "  [警告] 未找到 $GPIO_SETUP，将直接尝试发送停止脉冲"
+elif [ "$(id -u)" -eq 0 ]; then
+    if bash "$GPIO_SETUP"; then
+        echo "  [GPIO] 引脚复用配置完成"
+    else
+        echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
+    fi
+elif sudo -n true 2>/dev/null; then
+    if sudo -n bash "$GPIO_SETUP"; then
+        echo "  [GPIO] 引脚复用配置完成"
+    else
+        echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
+    fi
+else
+    if sudo -S -p '' bash "$GPIO_SETUP"; then
+        echo "  [GPIO] 引脚复用配置完成"
+    else
+        echo "  [警告] GPIO配置失败，将继续尝试发送停止脉冲"
+    fi
+fi
+echo ""
 
 # 在终止ROS节点前先向传送带控制板发送停止脉冲。
 # 可视化界面的停止按钮和命令行停止都调用本脚本，因此统一在这里处理。

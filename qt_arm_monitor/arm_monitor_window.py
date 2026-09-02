@@ -213,12 +213,13 @@ class SSHCmdWorker(QThread):
     log_signal = pyqtSignal(str)
     status_signal = pyqtSignal(str)  # 'started' / 'finished' / 'error:xxx'
 
-    def __init__(self, host, user, password, cmd):
+    def __init__(self, host, user, password, cmd, stdin_data=None):
         super().__init__()
         self.host = host
         self.user = user
         self.password = password
         self.cmd = cmd
+        self.stdin_data = stdin_data
         self._running = True
 
     @staticmethod
@@ -244,6 +245,8 @@ class SSHCmdWorker(QThread):
             channel = transport.open_session()
             channel.get_pty()  # allocate pseudo-tty so sudo prompts work
             channel.exec_command(self.cmd)
+            if self.stdin_data:
+                channel.send(self.stdin_data)
             channel.settimeout(1.0)
             byte_buf = b''
             while self._running:
@@ -1559,7 +1562,9 @@ class ArmMonitorWindow(QMainWindow):
             self._cmd_worker = LocalCmdWorker(cmd)
         else:
             host = self.ip_input.text().strip()
-            self._cmd_worker = SSHCmdWorker(host, _SSH_USER, _SSH_PASSWORD, cmd)
+            self._cmd_worker = SSHCmdWorker(
+                host, _SSH_USER, _SSH_PASSWORD, cmd,
+                stdin_data=(_SSH_PASSWORD + '\n') if _SSH_PASSWORD else None)
 
         self._cmd_worker.log_signal.connect(self._on_cmd_log)
         self._cmd_worker.status_signal.connect(self._on_stop_status)
