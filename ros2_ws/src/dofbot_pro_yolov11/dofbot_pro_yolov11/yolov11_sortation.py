@@ -93,6 +93,11 @@ class Yolov11GraspNode(Node):
         self.down_joint = [130.0, 55.0, 34.0, 16.0, 90.0, 125.0]
         self.set_joint = [90.0, 120.0, 0.0, 0.0, 90.0, 90.0]
         self.gripper_joint = 90.0
+        # Joint6: smaller angles open the gripper. Pre-close it at a safe
+        # height before descending into the tray, then keep this width fixed.
+        self.GRIPPER_APPROACH_ANGLE = 60.0
+        self.GRIPPER_CLOSED_ANGLE = 150.0
+        self.GRIPPER_RELEASE_ANGLE = 30.0
         self.depth_bridge = CvBridge()
         self.start_sort = False
         self.CurEndPos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -349,8 +354,12 @@ class Yolov11GraspNode(Node):
             else:
                 joints[3] = response.joint4
             joints[4] = 90
-            joints[5] = 30
+            joints[5] = self.GRIPPER_APPROACH_ANGLE
 
+            # 先在托盘上方收至安全开度，避免夹爪以最大开度边下落边收拢。
+            self.Arm.Arm_serial_servo_write(
+                6, self.GRIPPER_APPROACH_ANGLE, 400)
+            time.sleep(0.5)
             self.pubTargetArm(joints, runtime=1500)
             time.sleep(1.8)
             self.move()
@@ -363,9 +372,11 @@ class Yolov11GraspNode(Node):
 
         self.Arm.Arm_serial_servo_write(5, self.gripper_joint, 500)
         time.sleep(0.5)
-        self.Arm.Arm_serial_servo_write(6, 150, 600)
+        self.Arm.Arm_serial_servo_write(
+            6, self.GRIPPER_CLOSED_ANGLE, 600)
         time.sleep(0.7)
-        self.Arm.Arm_serial_servo_write6(90.0, 120.0, 0.0, 0.0, 90.0, 150.0, 1000)
+        self.Arm.Arm_serial_servo_write6(
+            90.0, 120.0, 0.0, 0.0, self.GRIPPER_CLOSED_ANGLE, 1000)
         time.sleep(1.2)
         print("name",self.name)
 
@@ -380,13 +391,14 @@ class Yolov11GraspNode(Node):
             self.set_joint = [90, 50, 60, 2, 90.0, 120]
 
 
-        # 先用夹紧状态运动到放置位置（Joint6保持140夹紧）
+        # 先用夹紧状态运动到放置位置（Joint6保持150夹紧）
         place_joint = list(self.set_joint)
-        place_joint[5] = 150  # 保持夹爪夹紧
+        place_joint[5] = self.GRIPPER_CLOSED_ANGLE
         self.Arm.Arm_serial_servo_write6_array(place_joint, 1200)
         time.sleep(1.5)
         # 到位后再松开夹爪
-        self.Arm.Arm_serial_servo_write(6, 30, 400)
+        self.Arm.Arm_serial_servo_write(
+            6, self.GRIPPER_RELEASE_ANGLE, 400)
         time.sleep(0.5)
 
         # ===== 平滑归位：分两步走，避免多关节同时大幅运动导致顿挫 =====
