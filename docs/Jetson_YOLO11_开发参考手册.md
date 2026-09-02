@@ -454,6 +454,8 @@ bash ~/place_pose_capture/capture_place_pose.sh
 
 工具输出`[待写入代码] quexianketi joint: [...]`，同时保存到`/tmp/dofbot_place_pose.json`。应将该数组带回开发机审核后，再替换`sort_items['quexianketi']['joint']`。投放流程会将第6关节覆盖为夹紧角165度，因此重新示教主要使用关节1至5的读数。
 
+初始检测等待姿态应使用`bash ~/place_pose_capture/capture_initial_pose.sh`采集。该模式允许当前设备实际使用的第4关节负角（范围-90～180度），并输出`[待写入代码] init_joints: [...]`；第6关节固定为检测等待张开角30度。初始姿态同时用于启动、抓取后归位和归位校验，不能与缺陷件投放数组混用。
+
 ## 10. 构建、部署与运行
 
 ### 10.1 构建ROS 2工作区

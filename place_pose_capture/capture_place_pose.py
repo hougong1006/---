@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Safely capture a manually taught Dofbot placement pose."""
+"""Safely capture a manually taught Dofbot placement or initial pose."""
 
+import argparse
 import fcntl
 import json
 import os
@@ -13,13 +14,21 @@ from Arm_Lib import Arm_Device
 
 
 LOCK_FILE = Path("/tmp/dofbot_place_pose_capture.lock")
-RESULT_FILE = Path("/tmp/dofbot_place_pose.json")
+PLACE_RESULT_FILE = Path("/tmp/dofbot_place_pose.json")
+INITIAL_RESULT_FILE = Path("/tmp/dofbot_initial_pose.json")
 SAMPLE_COUNT = 5
 MAX_SAMPLE_SPREAD_DEG = 4
 READ_RETRIES = 5
 PING_OK = 0xDA
-# Arm_Lib defines the base servo (S1) as a 0-360 degree joint.
-JOINT_LIMITS = ((0, 360), (0, 180), (0, 180), (0, 180), (0, 270), (0, 180))
+# Arm_Lib defines the base servo (S1) as a 0-360 degree joint. The running
+# sortation program already uses -18 degrees for S4 at its initial pose, so
+# initial-pose teaching must preserve the controller's extended S4 range.
+PLACE_JOINT_LIMITS = (
+    (0, 360), (0, 180), (0, 180), (0, 180), (0, 270), (0, 180)
+)
+INITIAL_JOINT_LIMITS = (
+    (0, 360), (0, 180), (0, 180), (-90, 180), (0, 270), (0, 180)
+)
 
 CONFLICT_PATTERNS = (
     "dofbot_pro_driver arm_driver",
@@ -64,7 +73,7 @@ def acquire_lock():
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError as exc:
         handle.close()
-        raise RuntimeError("投放位置采集工具已经在运行") from exc
+        raise RuntimeError("姿态采集工具已经在运行") from exc
     handle.write(f"{os.getpid()}\n")
     handle.flush()
     return handle
@@ -108,7 +117,7 @@ def read_joint(arm, joint_id):
     raise RuntimeError(f"{joint_id}号关节连续{READ_RETRIES}次读取失败{detail}")
 
 
-def capture_stable_pose(arm):
+def capture_stable_pose(arm, joint_limits):
     samples = [[] for _ in range(6)]
     for sample_index in range(SAMPLE_COUNT):
         for joint_id in range(1, 7):
@@ -126,7 +135,7 @@ def capture_stable_pose(arm):
 
     pose = []
     for joint_id, (values, limits) in enumerate(
-        zip(samples, JOINT_LIMITS), start=1
+        zip(samples, joint_limits), start=1
     ):
         angle = int(round(statistics.median(values)))
         minimum, maximum = limits
@@ -139,7 +148,7 @@ def capture_stable_pose(arm):
     return pose
 
 
-def run():
+def run(mode):
     conflicts = find_conflicting_processes()
     if conflicts:
         log("[拒绝启动] 以下程序正在占用机械臂:")
@@ -161,8 +170,16 @@ def run():
         torque_released = True
         time.sleep(0.2)
 
-        log("\n请用手缓慢移动机械臂到新的缺陷件投放位置。")
-        log("重点调整关节1至5；程序投放时会把关节6保持为夹紧角165°。")
+        if mode == "initial":
+            log("\n请用手缓慢移动机械臂到新的初始检测等待位置。")
+            log("重点调整关节1至5；程序会把关节6保持为张开角30°。")
+            joint_limits = INITIAL_JOINT_LIMITS
+            result_file = INITIAL_RESULT_FILE
+        else:
+            log("\n请用手缓慢移动机械臂到新的缺陷件投放位置。")
+            log("重点调整关节1至5；程序投放时会把关节6保持为夹紧角165°。")
+            joint_limits = PLACE_JOINT_LIMITS
+            result_file = PLACE_RESULT_FILE
         input("到达目标位置并扶稳后按 Enter 锁定当前位置并开始读取...")
 
         # This controller returns position feedback reliably only while torque
@@ -171,20 +188,33 @@ def run():
         torque_released = False
         time.sleep(0.5)
 
-        pose = capture_stable_pose(arm)
+        pose = capture_stable_pose(arm, joint_limits)
+        code_value = pose[:5] + ([30] if mode == "initial" else [29])
         result = {
             "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": mode,
             "joints": pose,
-            "sort_item_value": pose[:5] + [29],
-            "note": "Joint 6 is replaced by GRIPPER_CLOSED_ANGLE during placement.",
+            "code_value": code_value,
+            "note": (
+                "Joint 6 is kept at 30 degrees for the initial detection pose."
+                if mode == "initial"
+                else "Joint 6 is replaced by GRIPPER_CLOSED_ANGLE during placement."
+            ),
         }
-        RESULT_FILE.write_text(
+        if mode == "initial":
+            result["init_joints"] = code_value
+        else:
+            result["sort_item_value"] = code_value
+        result_file.write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
 
         log("\n[读取完成] 六关节角度: " + str(pose))
-        log("[待写入代码] quexianketi joint: " + str(result["sort_item_value"]))
-        log(f"[结果文件] {RESULT_FILE}")
+        if mode == "initial":
+            log("[待写入代码] init_joints: " + str(code_value))
+        else:
+            log("[待写入代码] quexianketi joint: " + str(code_value))
+        log(f"[结果文件] {result_file}")
 
         log("\n[安全提示] 请重新托住机械臂，准备再次关闭扭矩。")
         input("托稳后按 Enter 关闭扭矩并准备摆回竖直...")
@@ -211,8 +241,14 @@ def run():
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode", choices=("place", "initial"), default="place",
+        help="capture the defect placement pose or initial detection pose",
+    )
+    args = parser.parse_args()
     try:
-        return run()
+        return run(args.mode)
     except KeyboardInterrupt:
         log("\n[取消] 用户终止采集。")
         return 130
