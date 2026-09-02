@@ -437,7 +437,8 @@ class Yolov11GraspNode(Node):
             6, self.GRIPPER_CLOSED_ANGLE, 600)
         time.sleep(0.7)
         self.Arm.Arm_serial_servo_write6(
-            90.0, 120.0, 0.0, 0.0, self.GRIPPER_CLOSED_ANGLE, 1000)
+            90.0, 120.0, 0.0, 0.0, 90.0,
+            self.GRIPPER_CLOSED_ANGLE, 1000)
         time.sleep(1.2)
         print("name",self.name)
 
