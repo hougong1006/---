@@ -1,0 +1,14 @@
+#!/bin/bash
+# Short command entry for the existing six-joint communication and motion test.
+
+set -euo pipefail
+
+JOINT_TEST_START="$HOME/joint_self_test/start_joint_test.sh"
+
+if [ ! -f "$JOINT_TEST_START" ]; then
+    echo "[关节自检][错误] 未找到 $JOINT_TEST_START" >&2
+    echo "[关节自检][错误] 请先将joint_self_test目录部署到Jetson" >&2
+    exit 1
+fi
+
+exec bash "$JOINT_TEST_START"

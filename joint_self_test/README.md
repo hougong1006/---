@@ -14,12 +14,14 @@
 
 ```powershell
 scp -r .\joint_self_test jetson@10.182.135.172:/home/jetson/
+scp .\scripts\3 jetson@10.182.135.172:/home/jetson/
 ```
 
 登录Jetson并设置脚本权限：
 
 ```bash
-chmod +x ~/joint_self_test/*.sh ~/joint_self_test/*.py
+chmod +x ~/joint_self_test/*.sh ~/joint_self_test/*.py ~/3
+sudo ln -sf /home/jetson/3 /usr/local/bin/3
 ```
 
 ## 使用
@@ -29,8 +31,10 @@ chmod +x ~/joint_self_test/*.sh ~/joint_self_test/*.py
 一键启动：
 
 ```bash
-bash ~/joint_self_test/start_joint_test.sh
+3
 ```
+
+短命令`3`调用的仍是`~/joint_self_test/start_joint_test.sh`，不会绕过原有安全检查。
 
 查看实时日志：
 

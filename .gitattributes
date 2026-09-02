@@ -3,6 +3,7 @@
 *.sh text eol=lf
 scripts/1 text eol=lf
 scripts/2 text eol=lf
+scripts/3 text eol=lf
 *.py text eol=lf
 *.cpp text eol=lf
 *.h text eol=lf
