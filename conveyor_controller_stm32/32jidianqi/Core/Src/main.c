@@ -88,8 +88,8 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-  /* Preserve the existing power-on behavior: PB0 high starts the conveyor. */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+  /* Safe power-on state: keep the conveyor stopped until PA1 requests start. */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
   /* USER CODE END 2 */
 
   /* Infinite loop */
