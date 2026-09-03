@@ -14,14 +14,14 @@
 
 ```powershell
 scp -r .\joint_self_test jetson@10.182.135.172:/home/jetson/
-scp .\scripts\3 jetson@10.182.135.172:/home/jetson/
+scp .\scripts\ceshi jetson@10.182.135.172:/home/jetson/
 ```
 
 登录Jetson并设置脚本权限：
 
 ```bash
-chmod +x ~/joint_self_test/*.sh ~/joint_self_test/*.py ~/3
-sudo ln -sf /home/jetson/3 /usr/local/bin/3
+chmod +x ~/joint_self_test/*.sh ~/joint_self_test/*.py ~/ceshi
+sudo ln -sf /home/jetson/ceshi /usr/local/bin/ceshi
 ```
 
 ## 使用
@@ -31,10 +31,10 @@ sudo ln -sf /home/jetson/3 /usr/local/bin/3
 一键启动：
 
 ```bash
-3
+ceshi
 ```
 
-短命令`3`调用的仍是`~/joint_self_test/start_joint_test.sh`，不会绕过原有安全检查。命令会一直显示测试日志，只有六个关节测试完成并执行竖直归位后才返回终端提示符；看到`[完成] 六关节自检及安全归位全部完成`后，才能启动完整分拣系统。
+短命令`ceshi`调用的仍是`~/joint_self_test/start_joint_test.sh`，不会绕过原有安全检查。命令会一直显示测试日志，只有六个关节测试完成并执行竖直归位后才返回终端提示符；看到`[完成] 六关节自检及安全归位全部完成`后，才能启动完整分拣系统。
 
 查看实时日志：
 

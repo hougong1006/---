@@ -59,7 +59,7 @@ bash ~/joint_self_test/start_joint_test.sh
 bash ~/joint_self_test/stop_joint_test.sh
 ```
 
-自检会逐个驱动六个关节并读取角度，正常完成或安全停止后均返回竖直姿态。短命令`3`会一直等待到测试和归位完成后才返回，不能在其运行期间启动完整分拣系统。详细部署和安全说明见`joint_self_test/README.md`。
+自检会逐个驱动六个关节并读取角度，正常完成或安全停止后均返回竖直姿态。短命令`ceshi`会一直等待到测试和归位完成后才返回，不能在其运行期间启动完整分拣系统。详细部署和安全说明见`joint_self_test/README.md`。
 
 ## 本地凭据配置
 

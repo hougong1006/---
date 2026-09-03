@@ -90,7 +90,7 @@ SORTING_TOKENS=(
 joint_test_pids=$(find_processes_by_token "joint_self_test.py")
 if [ -n "$joint_test_pids" ]; then
     echo "[拒绝启动] 六关节自检仍在运行 (PIDs: $joint_test_pids)"
-    echo "请等待命令3测试和归位完成，或安全执行:"
+    echo "请等待ceshi命令测试和归位完成，或安全执行:"
     echo "  bash ~/joint_self_test/stop_joint_test.sh"
     exit 2
 fi
