@@ -1,0 +1,159 @@
+#!/usr/bin/python3
+"""Move the Dofbot arm to the sorting detection standby pose only."""
+
+import fcntl
+import os
+import sys
+import time
+from pathlib import Path
+
+from Arm_Lib import Arm_Device
+
+
+INITIAL_POSE = [89.0, 56.0, 94.0, -36.0, 90.0, 30.0]
+MOVE_TIME_MS = 2500
+READ_RETRIES = 5
+ANGLE_TOLERANCE = 12.0
+PING_OK = 0xDA
+LOCK_FILE = Path("/tmp/dofbot_initial_move.lock")
+CONFLICT_TOKENS = {
+    "arm_driver",
+    "arm_driver_node",
+    "yolov11_sortation",
+    "joint_self_test.py",
+    "capture_place_pose.py",
+}
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def find_conflicts():
+    conflicts = []
+    current_pid = os.getpid()
+    for proc_dir in Path("/proc").glob("[0-9]*"):
+        try:
+            pid = int(proc_dir.name)
+            if pid == current_pid:
+                continue
+            raw_tokens = (proc_dir / "cmdline").read_bytes().split(b"\0")
+            tokens = [
+                token.decode("utf-8", errors="replace")
+                for token in raw_tokens
+                if token
+            ]
+        except (OSError, ValueError):
+            continue
+
+        token_names = {Path(token).name for token in tokens}
+        if CONFLICT_TOKENS.intersection(token_names):
+            conflicts.append((pid, " ".join(tokens)))
+    return conflicts
+
+
+def acquire_lock():
+    handle = LOCK_FILE.open("w", encoding="ascii")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise RuntimeError("初始位置移动脚本已经在运行") from exc
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
+def check_servo_communication(arm):
+    for joint_id in range(1, 7):
+        response = arm.Arm_ping_servo(joint_id)
+        if response != PING_OK:
+            raise RuntimeError(
+                f"{joint_id}号舵机通信异常: 返回={response!r}，期望=0xDA"
+            )
+    log("[通过] 1至6号舵机通信正常")
+
+
+def raw_to_angle(joint_id, raw_value):
+    if joint_id == 5:
+        return 270.0 * (raw_value - 380) / (3700 - 380)
+
+    angle = 180.0 * (raw_value - 900) / (3100 - 900)
+    if joint_id in (2, 3, 4):
+        angle = 180.0 - angle
+    return angle
+
+
+def read_joint(arm, joint_id):
+    last_error = None
+    for _ in range(READ_RETRIES):
+        try:
+            arm.bus.write_byte_data(arm.addr, joint_id + 0x30, 0x00)
+            time.sleep(0.005)
+            raw_value = arm.bus.read_word_data(arm.addr, joint_id + 0x30)
+            if raw_value != 0:
+                raw_value = ((raw_value >> 8) & 0xFF) | ((raw_value << 8) & 0xFF00)
+                return raw_to_angle(joint_id, raw_value)
+        except OSError as exc:
+            last_error = exc
+        time.sleep(0.03)
+
+    detail = f": {last_error}" if last_error is not None else ""
+    raise RuntimeError(f"{joint_id}号关节角度读取失败{detail}")
+
+
+def verify_pose(arm):
+    actual = [read_joint(arm, joint_id) for joint_id in range(1, 7)]
+    log("[反馈] 当前六关节角度: " + str([round(value, 1) for value in actual]))
+    errors = []
+    for joint_id, (expected, measured) in enumerate(
+        zip(INITIAL_POSE, actual), start=1
+    ):
+        difference = abs(measured - expected)
+        if difference > ANGLE_TOLERANCE:
+            errors.append(
+                f"关节{joint_id}目标{expected:.0f}°/实际{measured:.1f}°"
+            )
+    if errors:
+        raise RuntimeError("等待位置校验未通过: " + "，".join(errors))
+
+
+def main():
+    conflicts = find_conflicts()
+    if conflicts:
+        log("[拒绝执行] 以下程序正在控制或使用机械臂:")
+        for pid, command in conflicts:
+            log(f"  PID {pid}: {command}")
+        log("请先停止分拣、自检或姿态采集程序后重试。")
+        return 2
+
+    lock_handle = None
+    arm = None
+    try:
+        lock_handle = acquire_lock()
+        arm = Arm_Device()
+        check_servo_communication(arm)
+        log(f"[动作] 机械臂将在2秒后移动到检测等待位置: {INITIAL_POSE}")
+        log("[安全] 请确认机械臂周围无人且没有障碍物，Ctrl+C可取消。")
+        time.sleep(2.0)
+        arm.Arm_serial_set_torque(1)
+        arm.Arm_serial_servo_write6_array(INITIAL_POSE, MOVE_TIME_MS)
+        time.sleep(MOVE_TIME_MS / 1000.0 + 0.4)
+        verify_pose(arm)
+        log("[完成] 机械臂已到达检测等待位置")
+        return 0
+    except KeyboardInterrupt:
+        log("\n[取消] 已取消移动命令")
+        return 130
+    except Exception as exc:
+        log(f"[失败] {exc}")
+        return 1
+    finally:
+        if arm is not None:
+            del arm
+        if lock_handle is not None:
+            lock_handle.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

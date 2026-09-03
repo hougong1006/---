@@ -4,6 +4,7 @@
 scripts/qidong text eol=lf
 scripts/tingzhi text eol=lf
 scripts/ceshi text eol=lf
+scripts/chushi text eol=lf
 *.py text eol=lf
 *.cpp text eol=lf
 *.h text eol=lf
