@@ -1,8 +1,8 @@
 * text=auto
 
 *.sh text eol=lf
-scripts/1 text eol=lf
-scripts/2 text eol=lf
+scripts/qidong text eol=lf
+scripts/tingzhi text eol=lf
 scripts/3 text eol=lf
 *.py text eol=lf
 *.cpp text eol=lf
