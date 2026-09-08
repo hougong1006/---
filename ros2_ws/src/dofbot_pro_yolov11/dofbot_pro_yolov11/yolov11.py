@@ -73,6 +73,10 @@ class Yolov11DetectNode(Node):
         self.pub_SortFlag = self.create_publisher(Bool, 'sort_flag', 10)
         self.grasp_status_sub = self.create_subscription(Bool, 'grasp_done', self.GraspStatusCallback, qos_profile=1)
         self.redetect_sub = self.create_subscription(Bool, 'redetect_signal', self.RedetectCallback, qos_profile=1)
+        self.batch_scan_sub = self.create_subscription(
+            Bool, 'batch_scan_signal', self.BatchScanCallback, qos_profile=1)
+        self.batch_empty_pub = self.create_publisher(
+            Bool, 'batch_scan_empty', 10)
         self.largemodel_arm_done_pub = self.create_publisher(String, '/largemodel_arm_done', 1)
         self.start_flag = False
         self.yolo_model = YOLO("/home/jetson/dofbot_pro_ws/src/dofbot_pro_yolov11/dofbot_pro_yolov11/best.engine", task='detect')
@@ -85,11 +89,16 @@ class Yolov11DetectNode(Node):
         self.REDETECT_VOTE_FRAMES = 5
         self.REDETECT_VOTE_THRESHOLD = 3
         self.REDETECT_RECOVERY_DELAY = 2.0
+        self.BATCH_SCAN_SETTLE_DELAY = 0.8
+        self.BATCH_EMPTY_CONFIRM_FRAMES = 15
         self.no_detect_count = 0    # 连续无检测帧计数
         self.MAX_NO_DETECT = 2      # 连续无检测超过此值则清空缓冲区
         self.DEFECT_TRACK_MAX_DISTANCE = 90
         self.last_defect_center = None
         self.redetect_reference = None
+        self.batch_scan_mode = False
+        self.batch_scan_started_at = None
+        self.batch_empty_frames = 0
         # 只在相机正视区域内进行最终判定。工件从右向左运动，进入或
         # 离开画面时穿线孔容易因透视和凹槽遮挡产生误判。
         self.ROI_LEFT = 120
@@ -234,8 +243,16 @@ class Yolov11DetectNode(Node):
         detected_this_frame = False
         standard_detections = []
         defect_candidates = []
-        scan_active = self.start_flag
+        batch_scan_mode = self.batch_scan_mode
+        batch_scan_ready = (
+            not batch_scan_mode or
+            self.batch_scan_started_at is None or
+            time.monotonic() - self.batch_scan_started_at >=
+            self.BATCH_SCAN_SETTLE_DELAY
+        )
+        scan_active = self.start_flag and batch_scan_ready
         redetect_mode = self.redetect_reference is not None
+        stopped_scan_mode = redetect_mode or batch_scan_mode
         if boxes != [None] and scan_active:
             for box in boxes:
                 x_min, y_min, x_max, y_max = map(int, box.xyxy[0])
@@ -251,7 +268,7 @@ class Yolov11DetectNode(Node):
                 # outside the boundary, so Phase2 accepts a matching defect
                 # whose center remains inside the ROI.
                 redetecting_defect = (
-                    redetect_mode and
+                    stopped_scan_mode and
                     class_name == 'quexianketi'
                 )
                 if redetecting_defect:
@@ -272,7 +289,7 @@ class Yolov11DetectNode(Node):
                     continue
 
                 if class_name == 'biaozhunketi':
-                    if not redetect_mode:
+                    if not stopped_scan_mode:
                         standard_detections.append(
                             (float(center_x), float(center_y)))
                     continue
@@ -291,7 +308,7 @@ class Yolov11DetectNode(Node):
                 })
 
         if scan_active:
-            if not redetect_mode:
+            if not stopped_scan_mode:
                 self._update_standard_tracks(standard_detections)
 
             # 托盘内可能同时存在多个缺陷件。每帧只选择一个与上一帧位置
@@ -308,12 +325,12 @@ class Yolov11DetectNode(Node):
 
                 required_frames = (
                     self.REDETECT_VOTE_FRAMES
-                    if redetect_mode
+                    if stopped_scan_mode
                     else self.VOTE_FRAMES
                 )
                 required_threshold = (
                     self.REDETECT_VOTE_THRESHOLD
-                    if redetect_mode
+                    if stopped_scan_mode
                     else self.VOTE_THRESHOLD
                 )
                 vote_info = (
@@ -345,11 +362,36 @@ class Yolov11DetectNode(Node):
                         self.start_flag = False
                         self.vote_buffer = []
                         self.redetect_reference = None
+                        self.batch_scan_mode = False
+                        self.batch_scan_started_at = None
+                        self.batch_empty_frames = 0
                     else:
                         self.get_logger().info(
                             f"[投票未通过] 无共识 {dict(counter)}，"
                             "滑动窗口继续...")
                         self.vote_buffer.pop(0)
+
+            # The conveyor is stationary in batch mode. Only declare the tray
+            # clear after a sustained run of frames with no safe-ROI defect.
+            if batch_scan_mode and self.batch_scan_mode:
+                if defect_candidates:
+                    self.batch_empty_frames = 0
+                else:
+                    self.batch_empty_frames += 1
+                    if (self.batch_empty_frames >=
+                            self.BATCH_EMPTY_CONFIRM_FRAMES):
+                        self.get_logger().info(
+                            f"[批量扫描完成] 连续{self.batch_empty_frames}帧"
+                            "未发现剩余缺陷件")
+                        empty = Bool()
+                        empty.data = True
+                        self.batch_empty_pub.publish(empty)
+                        self.start_flag = False
+                        self.vote_buffer = []
+                        self.no_detect_count = 0
+                        self.batch_scan_mode = False
+                        self.batch_scan_started_at = None
+                        self.batch_empty_frames = 0
 
         # 未检测到目标时：连续无检测超过阈值则清空投票缓冲
         if not detected_this_frame and self.start_flag == True:
@@ -394,6 +436,10 @@ class Yolov11DetectNode(Node):
         if hasattr(self, 'restart_timer'):
             self.restart_timer.cancel()
 
+        self.batch_scan_mode = False
+        self.batch_scan_started_at = None
+        self.batch_empty_frames = 0
+
         if msg.data:
             delay = 0.1
             self.get_logger().info("夹取完成！0.1秒后开始下一轮检测...")
@@ -414,8 +460,33 @@ class Yolov11DetectNode(Node):
             self.get_logger().info("[重检测] 收到信号，重新启用检测以获取精确位置")
             self.vote_buffer = []  # 清空投票，重新开始
             self.no_detect_count = 0
+            self.batch_scan_mode = False
+            self.batch_scan_started_at = None
+            self.batch_empty_frames = 0
             self.redetect_reference = self.last_defect_center
             self.start_flag = True
+
+    def BatchScanCallback(self, msg):
+        """After each placement, scan the stationary tray for another defect."""
+        self.vote_buffer = []
+        self.no_detect_count = 0
+        self.redetect_reference = None
+        self.last_defect_center = None
+        self.batch_empty_frames = 0
+
+        if not msg.data:
+            self.batch_scan_mode = False
+            self.batch_scan_started_at = None
+            self.start_flag = False
+            self.get_logger().info("[批量扫描] 已取消")
+            return
+
+        self.batch_scan_mode = True
+        self.batch_scan_started_at = time.monotonic()
+        self.start_flag = True
+        self.get_logger().info(
+            f"[批量扫描] 机械臂已归位，{self.BATCH_SCAN_SETTLE_DELAY:.1f}秒后"
+            "检查托盘内剩余缺陷件")
 
     def _restart_detection(self):
         """定时器回调：重启检测循环"""
@@ -425,6 +496,9 @@ class Yolov11DetectNode(Node):
         self.no_detect_count = 0
         self.redetect_reference = None
         self.last_defect_center = None
+        self.batch_scan_mode = False
+        self.batch_scan_started_at = None
+        self.batch_empty_frames = 0
         start_flag = Bool()
         start_flag.data = True
         self.pub_SortFlag.publish(start_flag)

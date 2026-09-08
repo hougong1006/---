@@ -1683,9 +1683,9 @@ class ArmMonitorWindow(QMainWindow):
                 self._update_counts()
             return
 
-        # --- 分拣分类: 统计各类别计数 ---
-        if '分拣:' in line and '位置 ID=' in line:
-            m = re.search(r'分拣: (\S+)\s', line)
+        # A successful release produces one event per picked workpiece.
+        if '[SORT_COUNT]' in line:
+            m = re.search(r'\[SORT_COUNT\]\s+(\S+)', line)
             if m:
                 name = m.group(1)
                 if name in ('biaozhunketi', 'biaozhun', 'chengshujinju'):
@@ -1695,7 +1695,18 @@ class ArmMonitorWindow(QMainWindow):
                 elif name == 'qingjinju':
                     self._sort_green += 1
                 self._sort_total += 1
+                self.update_detection_stats(
+                    cur_obj=self._translate_name(name))
                 self._update_counts()
+            return
+
+        # --- 分拣分类: 仅更新当前对象；计数等待成功放置事件 ---
+        if '分拣:' in line and '位置 ID=' in line:
+            m = re.search(r'分拣: (\S+)\s', line)
+            if m:
+                name = m.group(1)
+                self.update_detection_stats(
+                    cur_obj=self._translate_name(name))
             return
 
         # --- 3D坐标: pose_T ---

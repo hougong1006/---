@@ -79,6 +79,8 @@ class Yolov11GraspNode(Node):
         self.pubPoint = self.create_publisher(ArmJoint, "TargetAngle", qos_profile=10)
         self.pubGraspStatus = self.create_publisher(Bool, "grasp_done", qos_profile=10)
         self.pub_playID = self.create_publisher(Int8, "player_id", qos_profile=10)
+        self.pub_batch_scan = self.create_publisher(
+            Bool, "batch_scan_signal", qos_profile=10)
         # 订阅器
         self.subDetect = self.create_subscription(Yolov11Detect, "Yolov11DetectInfo", self.getDetectInfoCallback, qos_profile=10)
         # 深度订阅使用 BEST_EFFORT 以匹配 orbbec 相机发布端 QoS
@@ -89,6 +91,9 @@ class Yolov11GraspNode(Node):
         )
         self.depth_image_sub = self.create_subscription(Image, '/camera/depth/image_raw', self.getDepthCallback, qos_profile=depth_qos)
         self.sub_SortFlag = self.create_subscription(Bool, 'sort_flag', self.getSortFlagCallback, qos_profile=10)
+        self.sub_batch_empty = self.create_subscription(
+            Bool, 'batch_scan_empty', self.getBatchEmptyCallback,
+            qos_profile=10)
         # 服务客户端
         self.client = self.create_client(Kinemarics, "dofbot_kinemarics")
 
@@ -134,8 +139,16 @@ class Yolov11GraspNode(Node):
         self.HOME_VERIFY_TIMEOUT = 6.0
         self.HOME_VERIFY_STABLE_READS = 2
         self.REDETECT_TIMEOUT = 4.0
+        self.BATCH_SCAN_TIMEOUT = 8.0
         self.redetect_started_at = None
         self.redetect_recovery_active = False
+        self.batch_active = False
+        self.waiting_batch_scan = False
+        self.batch_pick_count = 0
+        self.batch_started_at = None
+        self.batch_finish_active = False
+        self.MAX_BATCH_PICKS = 8
+        self.MAX_BATCH_DURATION = 90.0
         self.redetect_watchdog = self.create_timer(
             0.2, self.check_redetect_timeout)
 
@@ -207,6 +220,101 @@ class Yolov11GraspNode(Node):
             GPIO.output(BCM_START, GPIO.LOW)
         return True
 
+    def publish_batch_scan(self, enabled):
+        """Start or cancel the detector's stationary-tray scan."""
+        command = Bool()
+        command.data = bool(enabled)
+        self.pub_batch_scan.publish(command)
+
+    def request_next_batch_scan(self):
+        """Keep the belt stopped and look for the next defect on this tray."""
+        if self.external_stop_requested:
+            print("[批量分拣] 系统停止锁定生效，不再扫描")
+            return False
+
+        elapsed = (time.monotonic() - self.batch_started_at
+                   if self.batch_started_at is not None else 0.0)
+        if self.batch_pick_count >= self.MAX_BATCH_PICKS:
+            print(f"[批量分拣保护] 已达到单批最大抓取数"
+                  f"{self.MAX_BATCH_PICKS}，保持传送带停止")
+            self._reset_for_next_cycle()
+            return False
+        if elapsed >= self.MAX_BATCH_DURATION:
+            print(f"[批量分拣保护] 本批运行超过"
+                  f"{self.MAX_BATCH_DURATION:.0f}秒，保持传送带停止")
+            self._reset_for_next_cycle()
+            return False
+
+        self.name = None
+        self.cx = 0
+        self.cy = 0
+        self.detected_name = None
+        self.start_sort = False
+        self.grasp_flag = False
+        self.waiting_redetect = True
+        self.waiting_batch_scan = True
+        self.redetect_started_at = time.monotonic()
+        self.publish_batch_scan(True)
+        print(f"[批量分拣] 已完成{self.batch_pick_count}个，"
+              "传送带保持停止，扫描剩余缺陷件")
+        return True
+
+    def getBatchEmptyCallback(self, msg):
+        """Finish one tray only after the detector confirms it is clear."""
+        if (not msg.data or not self.batch_active or
+                not self.waiting_batch_scan or self.batch_finish_active):
+            return
+
+        self.waiting_redetect = False
+        self.waiting_batch_scan = False
+        self.redetect_started_at = None
+        self.batch_finish_active = True
+        threading.Thread(
+            target=self.finish_batch_cycle, daemon=True).start()
+
+    def finish_batch_cycle(self):
+        """Verify home, restart the belt, then re-arm moving detection."""
+        completed_count = self.batch_pick_count
+        try:
+            if self.external_stop_requested:
+                print("[批量分拣] 系统停止锁定生效，保持传送带停止")
+                return
+
+            home_confirmed = self.wait_until_home()
+            self.conveyor_start_permitted = home_confirmed
+            if not home_confirmed or not self.send_start_conveyor():
+                self.conveyor_stopped = True
+                self.grasp_flag = False
+                print("[批量分拣] 归位校验或启动信号失败，保持安全停机")
+                return
+
+            self.conveyor_stopped = False
+            self.set_indicator_running()
+            self.name = None
+            self.cx = 0
+            self.cy = 0
+            self.start_sort = False
+            self.grasp_flag = True
+            self.waiting_redetect = False
+            self.waiting_batch_scan = False
+            self.redetect_started_at = None
+            self.detected_name = None
+            self.batch_active = False
+            self.batch_pick_count = 0
+            self.batch_started_at = None
+
+            grasp_done = Bool()
+            grasp_done.data = True
+            self.pubGraspStatus.publish(grasp_done)
+            print(f"[批量分拣完成] 本次停带共抓取{completed_count}个缺陷件，"
+                  "机械臂已归位，传送带启动")
+        except Exception as exc:
+            print(f"[批量分拣] 完成流程异常: {exc}")
+            self._reset_for_next_cycle()
+        finally:
+            self.conveyor_start_permitted = False
+            self.batch_finish_active = False
+
     def wait_until_home(self):
         """Require stable joint feedback before allowing the conveyor to start."""
         expected = {
@@ -268,7 +376,12 @@ class Yolov11GraspNode(Node):
         self.start_sort = False
         self.grasp_flag = False
         self.waiting_redetect = False
+        self.waiting_batch_scan = False
         self.redetect_started_at = None
+        self.batch_active = False
+        self.batch_pick_count = 0
+        self.batch_started_at = None
+        self.publish_batch_scan(False)
         try:
             self.send_stop_conveyor()
             self.set_indicator_off()
@@ -290,11 +403,20 @@ class Yolov11GraspNode(Node):
                 self.redetect_recovery_active):
             return
         elapsed = time.monotonic() - self.redetect_started_at
-        if elapsed < self.REDETECT_TIMEOUT:
+        timeout = (self.BATCH_SCAN_TIMEOUT if self.waiting_batch_scan
+                   else self.REDETECT_TIMEOUT)
+        if elapsed < timeout:
             return
 
         self.waiting_redetect = False
         self.redetect_started_at = None
+        if self.waiting_batch_scan:
+            self.waiting_batch_scan = False
+            print(f"[批量扫描超时] {timeout:.1f}秒内未收到"
+                  "剩余目标或清空确认，保持传送带停止")
+            self._reset_for_next_cycle()
+            return
+
         self.redetect_recovery_active = True
         print(f"[Phase2超时] {self.REDETECT_TIMEOUT:.1f}秒内未取得可靠复检结果，"
               "准备安全恢复传送带")
@@ -323,6 +445,10 @@ class Yolov11GraspNode(Node):
             self.cx = 0
             self.cy = 0
             self.detected_name = None
+            self.batch_active = False
+            self.waiting_batch_scan = False
+            self.batch_pick_count = 0
+            self.batch_started_at = None
             self.set_indicator_running()
 
             # False means no grasp occurred. YOLO delays re-arming so the
@@ -371,6 +497,10 @@ class Yolov11GraspNode(Node):
                 self.start_sort = False
                 self.grasp_flag = False  # 防止重入
                 self.detected_name = self.name
+                self.batch_active = True
+                self.waiting_batch_scan = False
+                self.batch_pick_count = 0
+                self.batch_started_at = time.monotonic()
                 print(f"[Phase1] 检测到: {self.name} ({self.cx},{self.cy}) → 立即停带！")
                 self.set_indicator_defect()
                 self.send_stop_conveyor()  # 50ms GPIO脉冲，极速
@@ -416,6 +546,7 @@ class Yolov11GraspNode(Node):
                 if self.waiting_redetect:
                     # ===== Phase2: 传送带已停止，收到重新检测的精确坐标+深度 → 夹取 =====
                     self.waiting_redetect = False
+                    self.waiting_batch_scan = False
                     self.redetect_started_at = None
                     print(f"[Phase2] 重新检测: {self.name} ({self.cx},{self.cy}) d={self.dist:.3f}m r={used_r} → 开始夹取")
                     threading.Thread(target=self.do_grasp,
@@ -473,8 +604,13 @@ class Yolov11GraspNode(Node):
         self.cy = 0
         self.start_sort = False
         self.waiting_redetect = False
+        self.waiting_batch_scan = False
         self.redetect_started_at = None
         self.detected_name = None
+        self.batch_active = False
+        self.batch_pick_count = 0
+        self.batch_started_at = None
+        self.publish_batch_scan(False)
         try:
             self.set_indicator_off()
         except Exception as exc:
@@ -575,6 +711,9 @@ class Yolov11GraspNode(Node):
         self.Arm.Arm_serial_servo_write(
             6, self.GRIPPER_RELEASE_ANGLE, 400)
         time.sleep(0.5)
+        self.batch_pick_count += 1
+        print(f"[SORT_COUNT] {self.name} "
+              f"batch_index={self.batch_pick_count}")
 
         # ===== 平滑归位：分两步走，避免多关节同时大幅运动导致顿挫 =====
         # 第一步：保持底座不动，先收回手臂（关节2/3/4回到归位姿态）
@@ -592,42 +731,22 @@ class Yolov11GraspNode(Node):
         print("[夹取] 放置完成，等待机械臂归位...")
         time.sleep(1.8)
 
-        # ===== 读取关节反馈，确认稳定归位后才允许启动传送带 =====
+        # Confirm home before looking for another target. The conveyor remains
+        # stopped until the detector explicitly confirms that the tray is clear.
         home_confirmed = self.wait_until_home()
-        self.conveyor_start_permitted = home_confirmed
-        if home_confirmed and self.send_start_conveyor():
-            self.conveyor_stopped = False
-            self.set_indicator_running()
-            print("[传送带] 机械臂归位校验通过，传送带启动")
-        else:
+        if not home_confirmed:
             self.conveyor_stopped = True
+            self.grasp_flag = False
             try:
                 self.send_stop_conveyor()
             except Exception as exc:
                 print(f"[安全联锁] 补发停止信号失败: {exc}")
-            print("[传送带] 未满足启动条件，保持传送带停止")
-        self.conveyor_start_permitted = False
-
-        if self.conveyor_stopped:
-            self.grasp_flag = False
-            print("[安全联锁] 本轮未安全完成，不发布下一轮检测信号")
+            print("[传送带] 机械臂未确认归位，保持传送带停止")
             return
 
-        # 重置所有状态
-        self.name = None
-        self.cx = 0
-        self.cy = 0
-        self.start_sort = False
-        self.grasp_flag = True  # 允许下一轮夹取
-        self.waiting_redetect = False
-        self.redetect_started_at = None
-        self.detected_name = None
-
-        # 发布夹取完成信号，触发下一轮检测
-        grasp_done = Bool()
-        grasp_done.data = True
-        self.pubGraspStatus.publish(grasp_done)
-        print("[分拣] ===== 本轮分拣完成，等待下一个物体 =====")
+        self.conveyor_stopped = True
+        print("[批量分拣] 机械臂已归位，传送带继续保持停止")
+        self.request_next_batch_scan()
 
     def get_end_point_mat(self):
         print("Get the current pose is ",self.CurEndPos)
