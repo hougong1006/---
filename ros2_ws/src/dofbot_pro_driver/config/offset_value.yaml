@@ -7,4 +7,4 @@
 x_offset: -0.007754
 # Shift the landing point 10 mm left from the restored default calibration.
 y_offset: -0.04541
-z_offset: -0.0299
+z_offset: -0.0199
