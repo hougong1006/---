@@ -97,6 +97,7 @@ runtime_find_token_pids() {
         runtime_pid_is_protected "$pid" && continue
         runtime_pid_has_token "$pid" "$target" && printf '%s\n' "$pid"
     done
+    return 0
 }
 
 runtime_collect_target_pids() {
@@ -128,6 +129,7 @@ runtime_collect_target_pids() {
     if [ "${#selected[@]}" -gt 0 ]; then
         printf '%s\n' "${!selected[@]}" | sort -n
     fi
+    return 0
 }
 
 runtime_request_owner_stop() {

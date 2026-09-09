@@ -261,7 +261,16 @@ class SSHCmdWorker(QThread):
                 except Exception:
                     if channel.exit_status_ready():
                         break
-            self.status_signal.emit('finished')
+            if byte_buf:
+                line = self._decode_line(byte_buf).strip()
+                if line:
+                    self.log_signal.emit(line)
+            exit_code = channel.recv_exit_status()
+            if exit_code == 0:
+                self.status_signal.emit('finished')
+            else:
+                self.status_signal.emit(
+                    f'error:remote command exited with code {exit_code}')
         except Exception as e:
             self.status_signal.emit(f'error:{e}')
         finally:
