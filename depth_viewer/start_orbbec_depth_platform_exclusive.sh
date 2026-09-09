@@ -14,6 +14,8 @@ readonly STANDBY_SCRIPT="$HOME/chushi"
 readonly STANDBY_LOG="$LOG_DIR/orbbec_depth_exclusive_standby.log"
 readonly READY_FILE="$LOG_DIR/orbbec_depth_exclusive.ready"
 readonly PID_FILE="$LOG_DIR/orbbec_depth_exclusive.pid"
+readonly RUNTIME_COMMON="$HOME/runtime_common.sh"
+readonly RUNTIME_ENV="$HOME/.config/dofbot/runtime.env"
 
 port="8766"
 near="0.20"
@@ -45,9 +47,25 @@ if [[ "$run_standby_pose" == "1" && ! -r "$STANDBY_SCRIPT" ]]; then
     echo "Mechanical-arm standby script not found or unreadable: $STANDBY_SCRIPT" >&2
     exit 1
 fi
+if [[ ! -r "$RUNTIME_COMMON" ]]; then
+    echo "Shared runtime cleanup script not found: $RUNTIME_COMMON" >&2
+    exit 1
+fi
 
-# Do not displace a mechanical-arm workflow, a manually launched camera, or
-# another user's depth monitor. This command owns only a completely idle camera.
+# The Windows launcher is non-interactive. Load optional device-local sudo
+# credentials without storing them in the repository or command line.
+if [[ -r "$RUNTIME_ENV" ]]; then
+    set +u
+    source "$RUNTIME_ENV"
+    set -u
+fi
+source "$RUNTIME_COMMON"
+runtime_transition_begin "启动独占深度平台"
+trap runtime_transition_end EXIT
+runtime_stop_and_cleanup "独占深度平台启动前"
+
+# The shared cleanup above changes from the previous competition mode first.
+# These checks catch an unrecognized external camera process without killing it.
 if pgrep -f '[r]os2 launch orbbec_camera dabai_dcw2.launch.py' > /dev/null || \
    pgrep -f '[c]omponent_container.*__node:=camera_container' > /dev/null; then
     echo "An Orbbec camera workflow is already running. It was not changed." >&2
@@ -115,6 +133,7 @@ cleanup() {
             kill -KILL -- "-$driver_pid" 2>/dev/null || true
         fi
     fi
+    runtime_transition_end
     exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
@@ -192,6 +211,10 @@ if [[ ! -f "$READY_FILE" ]]; then
     tail -n 160 "$WEB_LOG" >&2 || true
     exit 1
 fi
+
+# Startup is complete; allow qidong/tingzhi/ceshi or another platform to take
+# the transition lock and stop this depth session when the operator switches.
+runtime_transition_end
 
 # Closing the Windows window requests /shutdown. An abnormal Windows exit
 # triggers the idle timeout, then this supervisor cleans the temporary driver.

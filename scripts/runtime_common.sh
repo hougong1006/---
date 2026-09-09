@@ -13,6 +13,8 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-98}"
 RUNTIME_TOKENS=(
     "start_sorting.sh"
     "start_video_only.sh"
+    "start_orbbec_depth_platform_exclusive.sh"
+    "depth_web_viewer.py"
     "dabai_dcw2.launch.py"
     "__node:=camera_container"
     "orbbec_camera_node"
