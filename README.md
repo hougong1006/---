@@ -39,6 +39,15 @@ source /opt/ros/humble/setup.bash
 source ~/dofbot_pro_ws/install/setup.bash
 ```
 
+部署短命令后，修改YOLO或机械臂分拣Python源码可直接执行：
+
+```bash
+bianyi
+```
+
+该命令会先检查核心Python语法，再编译`dofbot_pro_yolov11`并验证ROS 2入口；
+不会启动传送带、机械臂或分拣程序。
+
 启动和停止：
 
 ```bash

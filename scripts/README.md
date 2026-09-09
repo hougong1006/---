@@ -6,13 +6,15 @@
 - `tingzhi`：独立停止传送带。先调用`setup_gpio.sh`配置引脚复用，再由BCM6输出一次50 ms停止脉冲；不改变机械臂及ROS 2进程状态。
 - `ceshi`：以前台阻塞方式运行六关节通信与运动自检；只有测试结束并完成竖直归位后才返回命令行，防止操作者过早启动分拣程序。
 - `chushi`：不启动ROS 2、相机、YOLO或传送带，仅将机械臂移动到检测等待姿态`[89, 56, 94, -36, 90, 30]`并读取关节反馈校验。
+- `bianyi`：修改YOLO检测或机械臂分拣源码后，一键执行Python语法检查、ROS 2软件包编译和可执行入口验证；不启动任何设备。
 - `setup_gpio.sh`：配置传送带启停使用的BCM6/BCM13，以及独立报警灯状态输出使用的BCM5/BCM12；配置后会读回寄存器校验。
 - `monitor_sorting.sh`：查看节点、进程和日志状态。
 
 部署到Jetson用户目录后使用，例如：
 
 ```bash
-chmod +x ~/start_sorting.sh ~/stop_sorting.sh ~/qidong ~/tingzhi ~/ceshi ~/chushi ~/setup_gpio.sh ~/monitor_sorting.sh
+chmod +x ~/start_sorting.sh ~/stop_sorting.sh ~/qidong ~/tingzhi ~/ceshi ~/chushi ~/bianyi ~/setup_gpio.sh ~/monitor_sorting.sh
+sudo ln -sf /home/jetson/bianyi /usr/local/bin/bianyi
 ```
 
 脚本每次运行都会通过`sudo`自动配置GPIO引脚复用，随后独立控制传送带；命令行可能要求输入Jetson密码：
@@ -22,4 +24,5 @@ qidong
 tingzhi
 ceshi
 chushi
+bianyi
 ```

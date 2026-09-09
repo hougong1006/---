@@ -1,0 +1,53 @@
+#!/bin/bash
+# Compile the Dofbot YOLO sorting package after source changes.
+
+set -euo pipefail
+
+WORKSPACE="$HOME/dofbot_pro_ws"
+PACKAGE="dofbot_pro_yolov11"
+SOURCE_DIR="$WORKSPACE/src/$PACKAGE/$PACKAGE"
+DETECT_FILE="$SOURCE_DIR/yolov11.py"
+SORTATION_FILE="$SOURCE_DIR/yolov11_sortation.py"
+ROS_SETUP="/opt/ros/humble/setup.bash"
+WORKSPACE_SETUP="$WORKSPACE/install/setup.bash"
+
+if [ ! -d "$WORKSPACE" ]; then
+    echo "[编译失败] 未找到工作空间: $WORKSPACE" >&2
+    exit 1
+fi
+
+if [ ! -f "$ROS_SETUP" ]; then
+    echo "[编译失败] 未找到ROS 2环境: $ROS_SETUP" >&2
+    exit 1
+fi
+
+for source_file in "$DETECT_FILE" "$SORTATION_FILE"; do
+    if [ ! -f "$source_file" ]; then
+        echo "[编译失败] 未找到源码: $source_file" >&2
+        exit 1
+    fi
+done
+
+echo "=========================================="
+echo " Dofbot Pro YOLO分拣程序一键编译"
+echo "=========================================="
+echo "[1/3] 检查Python语法..."
+python3 -m py_compile "$DETECT_FILE" "$SORTATION_FILE"
+echo "      Python语法检查通过"
+
+echo "[2/3] 编译ROS 2软件包: $PACKAGE"
+cd "$WORKSPACE"
+source "$ROS_SETUP"
+colcon build --packages-select "$PACKAGE" --symlink-install
+
+echo "[3/3] 加载并验证编译结果..."
+source "$WORKSPACE_SETUP"
+if ! ros2 pkg executables "$PACKAGE" | grep -q \
+        "^$PACKAGE yolov11_sortation$"; then
+    echo "[编译失败] 未找到yolov11_sortation可执行入口" >&2
+    exit 1
+fi
+
+echo "=========================================="
+echo " 编译完成！可以重新启动分拣程序"
+echo "=========================================="
