@@ -4,11 +4,18 @@
 set -euo pipefail
 
 JOINT_TEST_START="$HOME/joint_self_test/start_joint_test.sh"
+RUNTIME_COMMON="$HOME/runtime_common.sh"
 
-if [ ! -f "$JOINT_TEST_START" ]; then
+if [ ! -f "$JOINT_TEST_START" ] || [ ! -f "$RUNTIME_COMMON" ]; then
     echo "[关节自检][错误] 未找到 $JOINT_TEST_START" >&2
-    echo "[关节自检][错误] 请先将joint_self_test目录部署到Jetson" >&2
+    echo "[关节自检][错误] 请确认关节自检目录和runtime_common.sh均已部署" >&2
     exit 1
 fi
+source "$RUNTIME_COMMON"
 
+runtime_transition_begin "启动六关节自检"
+trap runtime_transition_end EXIT
+runtime_stop_and_cleanup "关节自检前"
+runtime_transition_end
+trap - EXIT
 exec bash "$JOINT_TEST_START"

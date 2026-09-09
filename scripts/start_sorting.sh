@@ -26,6 +26,17 @@ WS_SETUP="$HOME/dofbot_pro_ws/install/setup.bash"
 YOLO_SCRIPT="$HOME/dofbot_pro_ws/src/dofbot_pro_yolov11/dofbot_pro_yolov11/yolov11.py"
 PID_FILE="/tmp/dofbot_sorting_pids.txt"
 LOG_DIR="/tmp/dofbot_logs"
+RUNTIME_COMMON="$HOME/runtime_common.sh"
+
+if [ ! -f "$RUNTIME_COMMON" ]; then
+    echo "[运行保护][错误] 未找到 $RUNTIME_COMMON" >&2
+    exit 1
+fi
+source "$RUNTIME_COMMON"
+
+runtime_transition_begin "启动完整分拣系统"
+trap runtime_transition_end EXIT
+runtime_stop_and_cleanup "完整分拣启动前"
 
 # 创建日志目录
 mkdir -p "$LOG_DIR"
@@ -206,6 +217,10 @@ cleanup() {
 }
 
 trap cleanup SIGINT SIGTERM
+
+# 节点启动阶段已经结束，释放模式切换锁，让停止命令可以随时执行。
+runtime_transition_end
+trap - EXIT
 
 # 保持脚本运行，等待用户Ctrl+C
 wait

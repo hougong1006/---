@@ -12,6 +12,17 @@ WS_SETUP="$HOME/dofbot_pro_ws/install/setup.bash"
 YOLO_SCRIPT="$HOME/dofbot_pro_ws/src/dofbot_pro_yolov11/dofbot_pro_yolov11/yolov11.py"
 PID_FILE="/tmp/dofbot_video_only_pids.txt"
 LOG_DIR="/tmp/dofbot_logs"
+RUNTIME_COMMON="$HOME/runtime_common.sh"
+
+if [ ! -f "$RUNTIME_COMMON" ]; then
+    echo "[VIDEO][ERROR] Missing $RUNTIME_COMMON" >&2
+    exit 1
+fi
+source "$RUNTIME_COMMON"
+
+runtime_transition_begin "启动独立视频"
+trap runtime_transition_end EXIT
+runtime_stop_and_cleanup "独立视频启动前"
 
 mkdir -p "$LOG_DIR"
 
@@ -74,7 +85,7 @@ for token in dabai_dcw2.launch.py '__node:=camera_container' \
 done
 if [ -n "$partial_pids" ]; then
     echo "[VIDEO] Cleaning an incomplete previous video start:$partial_pids"
-    if ! bash "$HOME/stop_video_only.sh"; then
+    if ! runtime_terminate_all; then
         echo "[VIDEO][ERROR] Previous video process cleanup failed"
         exit 4
     fi
@@ -116,7 +127,7 @@ launch_video_node() {
 }
 
 cleanup_failed_start() {
-    bash "$HOME/stop_video_only.sh" >/dev/null 2>&1 || true
+    runtime_terminate_all >/dev/null 2>&1 || true
 }
 
 launch_video_node "camera" \

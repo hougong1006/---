@@ -1508,7 +1508,11 @@ class ArmMonitorWindow(QMainWindow):
         self.label_sys_status.setStyleSheet("color: #f59e0b;")
         self.add_log("[SYS] Launching sortation system...")
 
-        cmd = "bash ~/start_sorting.sh"
+        if _SSH_PASSWORD:
+            sudo_value = shlex.quote(_SSH_PASSWORD)
+            cmd = f"DOFBOT_SUDO_PASSWORD={sudo_value} bash ~/start_sorting.sh"
+        else:
+            cmd = "bash ~/start_sorting.sh"
 
         if _IS_LOCAL:
             self._cmd_worker = LocalCmdWorker(cmd)

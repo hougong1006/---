@@ -17,6 +17,7 @@ import time
 import math
 import html as _html
 import json
+import shlex
 import subprocess
 import yaml
 import threading
@@ -37,6 +38,8 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 _FONT = ('Noto Sans CJK JP' if sys.platform == 'linux' else 'Microsoft YaHei')
 # Detect if running locally on Jetson (Linux)
 _IS_LOCAL = sys.platform == 'linux'
+_SSH_USER = 'jetson'
+_SSH_PASSWORD = 'yahboom'
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import numpy as np
@@ -1527,13 +1530,14 @@ class ArmMonitorWindow(QMainWindow):
         self.label_sys_status.setStyleSheet("color: #f59e0b;")
         self.add_log("[SYS] Launching sortation system...")
 
-        cmd = "bash ~/start_sorting.sh"
+        sudo_value = shlex.quote(_SSH_PASSWORD)
+        cmd = f"DOFBOT_SUDO_PASSWORD={sudo_value} bash ~/start_sorting.sh"
 
         if _IS_LOCAL:
             self._cmd_worker = LocalCmdWorker(cmd)
         else:
             host = self.ip_input.text().strip()
-            self._cmd_worker = SSHCmdWorker(host, 'jetson', 'yahboom', cmd)
+            self._cmd_worker = SSHCmdWorker(host, _SSH_USER, _SSH_PASSWORD, cmd)
 
         self._cmd_worker.log_signal.connect(self._on_cmd_log)
         self._cmd_worker.status_signal.connect(self._on_launch_status)
@@ -1573,13 +1577,14 @@ class ArmMonitorWindow(QMainWindow):
         self.label_sys_status.setStyleSheet("color: #f59e0b;")
         self.add_log("[SYS] Stopping sortation system...")
 
-        cmd = "bash ~/stop_sorting.sh"
+        sudo_value = shlex.quote(_SSH_PASSWORD)
+        cmd = f"DOFBOT_SUDO_PASSWORD={sudo_value} bash ~/stop_sorting.sh"
 
         if _IS_LOCAL:
             self._cmd_worker = LocalCmdWorker(cmd)
         else:
             host = self.ip_input.text().strip()
-            self._cmd_worker = SSHCmdWorker(host, 'jetson', 'yahboom', cmd)
+            self._cmd_worker = SSHCmdWorker(host, _SSH_USER, _SSH_PASSWORD, cmd)
 
         self._cmd_worker.log_signal.connect(self._on_cmd_log)
         self._cmd_worker.status_signal.connect(self._on_stop_status)
@@ -1990,7 +1995,8 @@ class ArmMonitorWindow(QMainWindow):
                 self._video_only_mode):
             self._stop_camera_stream()
             self._run_video_service_command(
-                "bash ~/stop_video_only.sh", self._on_video_stop_status)
+                self._video_control_command("bash ~/stop_video_only.sh"),
+                self._on_video_stop_status)
             self.add_log("[VIDEO] Stopping independent video service...")
             return
 
@@ -2012,8 +2018,14 @@ class ArmMonitorWindow(QMainWindow):
         self.add_log("[VIDEO] Starting camera, image conversion and MJPEG only")
         self.add_log("[VIDEO] Arm, inverse kinematics, sortation and conveyor remain stopped")
         self._run_video_service_command(
-            "bash ~/start_video_only.sh && echo __VIDEO_ONLY_READY__",
+            self._video_control_command(
+                "bash ~/start_video_only.sh && echo __VIDEO_ONLY_READY__"),
             self._on_video_start_status)
+
+    @staticmethod
+    def _video_control_command(command):
+        sudo_value = shlex.quote(_SSH_PASSWORD)
+        return f"DOFBOT_SUDO_PASSWORD={sudo_value} {command}"
 
     def _run_video_service_command(self, cmd, status_handler):
         """Run a finite video-only control script locally or over SSH."""
@@ -2022,7 +2034,7 @@ class ArmMonitorWindow(QMainWindow):
         else:
             host = self.ip_input.text().strip()
             self._video_cmd_worker = SSHCmdWorker(
-                host, 'jetson', 'yahboom', cmd)
+                host, _SSH_USER, _SSH_PASSWORD, cmd)
         self._video_cmd_worker.log_signal.connect(self._on_video_cmd_log)
         self._video_cmd_worker.status_signal.connect(status_handler)
         self._video_cmd_worker.start()
