@@ -1534,6 +1534,7 @@ class ArmMonitorWindow(QMainWindow):
             return
 
         self._system_stopped = False  # Clear stop flag on launch
+        self._launch_ready_received = False
         self.btn_launch.setEnabled(False)
         self.label_sys_status.setText(_TX['LAUNCHING'])
         self.label_sys_status.setStyleSheet("color: #f59e0b;")
@@ -1552,13 +1553,12 @@ class ArmMonitorWindow(QMainWindow):
         self._cmd_worker.status_signal.connect(self._on_launch_status)
         self._cmd_worker.start()
 
-        # start_sorting.sh blocks forever on 'wait', so _on_launch_status
-        # will never fire.  Use a timer to restart camera/log after nodes
-        # have had enough time to initialise (~28 s).
+        # The device emits an explicit marker after all launch steps finish.
+        # This timer is only a failure timeout, never a success signal.
         self._launch_ready_timer = QTimer()
         self._launch_ready_timer.setSingleShot(True)
-        self._launch_ready_timer.timeout.connect(self._on_launch_nodes_ready)
-        self._launch_ready_timer.start(28000)
+        self._launch_ready_timer.timeout.connect(self._on_launch_timeout)
+        self._launch_ready_timer.start(90000)
 
     def _stop_system(self):
         """One-click stop: SSH exec stop_sorting.sh."""
@@ -1601,6 +1601,9 @@ class ArmMonitorWindow(QMainWindow):
 
     def _on_cmd_log(self, line):
         """Forward remote command output to log panel."""
+        if line == "__DOFBOT_SORTING_READY__":
+            self._on_launch_nodes_ready()
+            return
         self.add_log(f"[REM] {line}")
 
     def _restart_ssh_log(self):
@@ -1621,7 +1624,12 @@ class ArmMonitorWindow(QMainWindow):
         self.ssh_worker.start()
 
     def _on_launch_nodes_ready(self):
-        """Timer callback: ~28 s after launch, nodes should be up. Restart UI."""
+        """Handle the explicit ready marker emitted by start_sorting.sh."""
+        if getattr(self, '_launch_ready_received', False):
+            return
+        self._launch_ready_received = True
+        if hasattr(self, '_launch_ready_timer') and self._launch_ready_timer.isActive():
+            self._launch_ready_timer.stop()
         self.label_sys_status.setText(_TX['LAUNCHED'])
         self.label_sys_status.setStyleSheet("color: #22c55e; font-weight: bold;")
         self._set_sys_buttons_enabled(self._ssh_connected)
@@ -1635,6 +1643,15 @@ class ArmMonitorWindow(QMainWindow):
         # are flushed before we start parsing real-time events.
         QTimer.singleShot(3000, self._enable_counting_after_connect)
 
+    def _on_launch_timeout(self):
+        """Report startup timeout without claiming that nodes are ready."""
+        if getattr(self, '_launch_ready_received', False):
+            return
+        self.label_sys_status.setText(_TX['LAUNCH_ERR'])
+        self.label_sys_status.setStyleSheet("color: #ef4444;")
+        self._set_sys_buttons_enabled(self._ssh_connected)
+        self.add_log("[SYS] Launch timed out before the device reported ready")
+
     def _on_launch_status(self, status):
         """Launch command finished callback (may never fire if script blocks)."""
         self._cmd_worker = None
@@ -1643,16 +1660,10 @@ class ArmMonitorWindow(QMainWindow):
             # Cancel timer if command somehow finished before it
             if hasattr(self, '_launch_ready_timer') and self._launch_ready_timer.isActive():
                 self._launch_ready_timer.stop()
-            self.label_sys_status.setText(_TX['LAUNCHED'])
-            self.label_sys_status.setStyleSheet("color: #22c55e; font-weight: bold;")
-            self.add_log("[SYS] Sortation launched, reconnecting log tail...")
-            self._restart_ssh_log()
-            if not self._video_only_mode:
-                self._start_camera_stream()
-            self._connect_time = time.time()
-            self._uptime_timer.start()
-            # Delay counting to skip historical tail lines
-            QTimer.singleShot(3000, self._enable_counting_after_connect)
+            if not getattr(self, '_launch_ready_received', False):
+                self.label_sys_status.setText(_TX['LAUNCH_ERR'])
+                self.label_sys_status.setStyleSheet("color: #ef4444;")
+                self.add_log("[SYS] Start script exited before reporting ready")
         elif status.startswith('error:'):
             if hasattr(self, '_launch_ready_timer') and self._launch_ready_timer.isActive():
                 self._launch_ready_timer.stop()

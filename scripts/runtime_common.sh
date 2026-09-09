@@ -60,7 +60,9 @@ runtime_read_ppid() {
 
 runtime_pid_is_protected() {
     local candidate=$1
-    local ancestor=$$
+    # BASHPID changes inside command substitutions; $$ does not. Starting from
+    # BASHPID prevents a scan from treating its own subshell as an old launcher.
+    local ancestor=${BASHPID:-$$}
     local next
 
     while [ "$ancestor" -gt 1 ] 2>/dev/null; do

@@ -187,6 +187,7 @@ while read -r pid name; do
     fi
 done < "$PID_FILE"
 echo ""
+echo "__DOFBOT_SORTING_READY__"
 echo "  日志目录: $LOG_DIR"
 echo "  停止所有: bash ~/stop_sorting.sh"
 echo ""
