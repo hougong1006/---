@@ -1,6 +1,4 @@
 #!/bin/bash
-# Compile the Dofbot YOLO sorting package after source changes.
-
 set -euo pipefail
 
 WORKSPACE="$HOME/dofbot_pro_ws"
