@@ -35,11 +35,15 @@ echo "      Python语法检查通过"
 
 echo "[2/3] 编译ROS 2软件包: $PACKAGE"
 cd "$WORKSPACE"
+set +u
 source "$ROS_SETUP"
+set -u
 colcon build --packages-select "$PACKAGE" --symlink-install
 
 echo "[3/3] 加载并验证编译结果..."
+set +u
 source "$WORKSPACE_SETUP"
+set -u
 if ! ros2 pkg executables "$PACKAGE" | grep -q \
         "^$PACKAGE yolov11_sortation$"; then
     echo "[编译失败] 未找到yolov11_sortation可执行入口" >&2
