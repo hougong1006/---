@@ -44,6 +44,20 @@ runtime_transition_end() {
     { exec 9>&-; } 2>/dev/null || true
 }
 
+runtime_read_ppid() {
+    local pid=$1
+    local key value rest
+
+    [ -r "/proc/$pid/status" ] || return 1
+    while read -r key value rest; do
+        if [ "$key" = "PPid:" ]; then
+            printf '%s\n' "$value"
+            return 0
+        fi
+    done < "/proc/$pid/status"
+    return 1
+}
+
 runtime_pid_is_protected() {
     local candidate=$1
     local ancestor=$$
@@ -51,7 +65,7 @@ runtime_pid_is_protected() {
 
     while [ "$ancestor" -gt 1 ] 2>/dev/null; do
         [ "$candidate" = "$ancestor" ] && return 0
-        next=$(awk '/^PPid:/ {print $2}' "/proc/$ancestor/status" 2>/dev/null) || break
+        next=$(runtime_read_ppid "$ancestor") || break
         [ -n "$next" ] || break
         ancestor=$next
     done
@@ -75,16 +89,23 @@ runtime_pid_has_token() {
 
 runtime_pid_is_target() {
     local pid=$1
-    local comm token
+    local comm token arg base
 
     runtime_pid_is_protected "$pid" && return 1
-    comm=$(cat "/proc/$pid/comm" 2>/dev/null) || return 1
+    IFS= read -r comm 2>/dev/null < "/proc/$pid/comm" || return 1
     case "$comm" in
         tail|less|more|grep|rg|sed|cat) return 1 ;;
     esac
-    for token in "${RUNTIME_TOKENS[@]}"; do
-        runtime_pid_has_token "$pid" "$token" && return 0
-    done
+    # Read cmdline once per process. Reading it once for every target token made
+    # mode transitions unnecessarily slow on the Jetson.
+    while IFS= read -r -d '' arg; do
+        base=${arg##*/}
+        for token in "${RUNTIME_TOKENS[@]}"; do
+            if [ "$arg" = "$token" ] || [ "$base" = "$token" ]; then
+                return 0
+            fi
+        done
+    done < "/proc/$pid/cmdline" 2>/dev/null
     return 1
 }
 
@@ -118,7 +139,7 @@ runtime_collect_target_pids() {
             pid=${proc##*/}
             [ -n "${selected[$pid]+x}" ] && continue
             runtime_pid_is_protected "$pid" && continue
-            ppid=$(awk '/^PPid:/ {print $2}' "$proc/status" 2>/dev/null) || continue
+            ppid=$(runtime_read_ppid "$pid") || continue
             if [ -n "${selected[$ppid]+x}" ]; then
                 selected[$pid]=1
                 changed=1
@@ -225,19 +246,25 @@ runtime_stop_joint_test_safely() {
 }
 
 runtime_terminate_all() {
-    local targets remaining
+    local targets remaining attempt
 
     runtime_stop_joint_test_safely
-    targets=$(runtime_collect_target_pids)
-    if [ -z "$targets" ]; then
-        echo "[清理] 未发现残留的机械臂、ROS或视频进程"
-    else
-        echo "[清理] 正在停止残留进程: $(echo "$targets" | tr '\n' ' ')"
+    for attempt in 1 2 3 4; do
+        targets=$(runtime_collect_target_pids)
+        if [ -z "$targets" ]; then
+            [ "$attempt" -eq 1 ] && echo "[清理] 未发现残留的机械臂、ROS或视频进程"
+            break
+        fi
+
+        echo "[清理] 第${attempt}轮停止残留进程: $(echo "$targets" | tr '\n' ' ')"
         while read -r pid; do
             [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null || true
         done <<< "$targets"
         sleep 2
 
+        # Rescan instead of checking only the original PID list. A ROS launcher
+        # can create a child while it is receiving TERM.
+        targets=$(runtime_collect_target_pids)
         while read -r pid; do
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 echo "[清理] 强制终止未退出进程 PID $pid"
@@ -245,7 +272,7 @@ runtime_terminate_all() {
             fi
         done <<< "$targets"
         sleep 1
-    fi
+    done
 
     : > "$RUNTIME_SORTING_PID_FILE"
     : > "$RUNTIME_VIDEO_PID_FILE"
