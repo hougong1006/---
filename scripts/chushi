@@ -11,7 +11,7 @@ from Arm_Lib import Arm_Device
 
 
 INITIAL_POSE = [89.0, 56.0, 94.0, -36.0, 90.0, 30.0]
-MOVE_TIME_MS = 2500
+MOVE_TIME_MS = 5000
 READ_RETRIES = 5
 ANGLE_TOLERANCE = 12.0
 PING_OK = 0xDA
@@ -133,7 +133,10 @@ def main():
         lock_handle = acquire_lock()
         arm = Arm_Device()
         check_servo_communication(arm)
-        log(f"[动作] 机械臂将在2秒后移动到检测等待位置: {INITIAL_POSE}")
+        log(
+            f"[动作] 机械臂将在2秒后用{MOVE_TIME_MS / 1000:.1f}秒"
+            f"缓慢移动到检测等待位置: {INITIAL_POSE}"
+        )
         log("[安全] 请确认机械臂周围无人且没有障碍物，Ctrl+C可取消。")
         time.sleep(2.0)
         arm.Arm_serial_set_torque(1)
