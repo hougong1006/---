@@ -28,18 +28,12 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-typedef struct
-{
-  GPIO_PinState stable_state;
-  uint16_t high_count;
-  uint16_t low_count;
-} DebouncedInput;
-
 typedef enum
 {
   INDICATOR_OFF = 0,
   INDICATOR_RUNNING,
-  INDICATOR_DEFECT
+  INDICATOR_DEFECT,
+  INDICATOR_INVALID
 } IndicatorMode;
 
 /* USER CODE END PTD */
@@ -69,10 +63,9 @@ typedef enum
 #define RELAY_OFF_LEVEL     GPIO_PIN_RESET
 
 #define STATUS_SCAN_TIME_MS       10U
-#define RUN_ASSERT_SAMPLES        20U  /* 连续高200 ms才确认正常运行 */
-#define RUN_RELEASE_SAMPLES       20U  /* 连续低200 ms才撤销正常运行 */
-#define DEFECT_ASSERT_SAMPLES     10U  /* 连续高100 ms才进入报警 */
-#define DEFECT_RELEASE_SAMPLES    30U  /* 连续低300 ms才解除报警 */
+#define RUN_CONFIRM_SAMPLES       60U  /* 运行编码连续稳定600 ms才生效 */
+#define DEFECT_CONFIRM_SAMPLES    80U  /* 缺陷编码连续稳定800 ms才报警 */
+#define OFF_CONFIRM_SAMPLES       80U  /* 双低连续稳定800 ms才全部关闭 */
 
 /* USER CODE END PD */
 
@@ -85,9 +78,9 @@ typedef enum
 
 /* USER CODE BEGIN PV */
 
-static DebouncedInput conveyor_run_input = {GPIO_PIN_RESET, 0U, 0U};
-static DebouncedInput defect_grab_input = {GPIO_PIN_RESET, 0U, 0U};
 static IndicatorMode current_indicator_mode = INDICATOR_OFF;
+static IndicatorMode pending_indicator_mode = INDICATOR_INVALID;
+static uint16_t pending_mode_count = 0U;
 
 /* USER CODE END PV */
 
@@ -114,45 +107,44 @@ static void Relay_SetState(GPIO_PinState green,
   HAL_GPIO_WritePin(GPIOB, RELAY_BUZZER_PIN, buzzer);
 }
 
-static GPIO_PinState Debounce_Update(DebouncedInput *input,
-                                      GPIO_PinState raw_state,
-                                      uint16_t assert_samples,
-                                      uint16_t release_samples)
+static IndicatorMode Indicator_DecodeInputs(GPIO_PinState conveyor_running,
+                                             GPIO_PinState defect_grabbing)
 {
-  if (raw_state == GPIO_PIN_SET)
+  if ((conveyor_running == GPIO_PIN_SET) &&
+      (defect_grabbing == GPIO_PIN_RESET))
   {
-    input->low_count = 0U;
-    if (input->stable_state == GPIO_PIN_RESET)
-    {
-      if (++input->high_count >= assert_samples)
-      {
-        input->stable_state = GPIO_PIN_SET;
-        input->high_count = 0U;
-      }
-    }
-    else
-    {
-      input->high_count = 0U;
-    }
-  }
-  else
-  {
-    input->high_count = 0U;
-    if (input->stable_state == GPIO_PIN_SET)
-    {
-      if (++input->low_count >= release_samples)
-      {
-        input->stable_state = GPIO_PIN_RESET;
-        input->low_count = 0U;
-      }
-    }
-    else
-    {
-      input->low_count = 0U;
-    }
+    return INDICATOR_RUNNING;
   }
 
-  return input->stable_state;
+  if ((conveyor_running == GPIO_PIN_RESET) &&
+      (defect_grabbing == GPIO_PIN_SET))
+  {
+    return INDICATOR_DEFECT;
+  }
+
+  if ((conveyor_running == GPIO_PIN_RESET) &&
+      (defect_grabbing == GPIO_PIN_RESET))
+  {
+    return INDICATOR_OFF;
+  }
+
+  /* 双高不是有效命令，通常是串扰或切换毛刺。 */
+  return INDICATOR_INVALID;
+}
+
+static uint16_t Indicator_ConfirmSamples(IndicatorMode mode)
+{
+  if (mode == INDICATOR_DEFECT)
+  {
+    return DEFECT_CONFIRM_SAMPLES;
+  }
+
+  if (mode == INDICATOR_RUNNING)
+  {
+    return RUN_CONFIRM_SAMPLES;
+  }
+
+  return OFF_CONFIRM_SAMPLES;
 }
 
 static void Indicator_ApplyMode(IndicatorMode mode)
@@ -182,33 +174,47 @@ static void Indicator_Update(void)
 {
   GPIO_PinState raw_conveyor_running;
   GPIO_PinState raw_defect_grabbing;
-  GPIO_PinState conveyor_running;
-  GPIO_PinState defect_grabbing;
+  IndicatorMode sampled_mode;
+  uint16_t required_samples;
 
   raw_conveyor_running = HAL_GPIO_ReadPin(GPIOA, CONVEYOR_RUN_INPUT_PIN);
   raw_defect_grabbing = HAL_GPIO_ReadPin(GPIOA, DEFECT_GRAB_INPUT_PIN);
+  sampled_mode = Indicator_DecodeInputs(raw_conveyor_running,
+                                        raw_defect_grabbing);
 
-  conveyor_running = Debounce_Update(&conveyor_run_input,
-                                      raw_conveyor_running,
-                                      RUN_ASSERT_SAMPLES,
-                                      RUN_RELEASE_SAMPLES);
-  defect_grabbing = Debounce_Update(&defect_grab_input,
-                                     raw_defect_grabbing,
-                                     DEFECT_ASSERT_SAMPLES,
-                                     DEFECT_RELEASE_SAMPLES);
+  /* 无效双高或任何采样跳变都会取消本轮确认，并保持现有输出。 */
+  if (sampled_mode == INDICATOR_INVALID)
+  {
+    pending_indicator_mode = INDICATOR_INVALID;
+    pending_mode_count = 0U;
+    return;
+  }
 
-  /* 消抖后的报警状态优先，防止两个输入同时为高时绿灯与红灯同时亮。 */
-  if (defect_grabbing == GPIO_PIN_SET)
+  if (sampled_mode == current_indicator_mode)
   {
-    Indicator_ApplyMode(INDICATOR_DEFECT);
+    pending_indicator_mode = INDICATOR_INVALID;
+    pending_mode_count = 0U;
+    return;
   }
-  else if (conveyor_running == GPIO_PIN_SET)
+
+  if (sampled_mode != pending_indicator_mode)
   {
-    Indicator_ApplyMode(INDICATOR_RUNNING);
+    pending_indicator_mode = sampled_mode;
+    pending_mode_count = 1U;
+    return;
   }
-  else
+
+  required_samples = Indicator_ConfirmSamples(sampled_mode);
+  if (pending_mode_count < required_samples)
   {
-    Indicator_ApplyMode(INDICATOR_OFF);
+    pending_mode_count++;
+  }
+
+  if (pending_mode_count >= required_samples)
+  {
+    Indicator_ApplyMode(sampled_mode);
+    pending_indicator_mode = INDICATOR_INVALID;
+    pending_mode_count = 0U;
   }
 }
 
