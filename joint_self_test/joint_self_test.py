@@ -22,6 +22,10 @@ READ_ATTEMPTS = 8
 READ_RETRY_DELAY = 0.08
 VERIFY_ATTEMPTS = 3
 VERIFY_RETRY_DELAY = 0.25
+MOVE_ATTEMPTS = 3
+MOVE_COMMAND_GAP = 0.20
+MOVE_SETTLE_MARGIN = 0.50
+MOVE_RETRY_DELAY = 0.30
 PID_FILE = Path("/tmp/dofbot_joint_self_test.pid")
 LOCK_FILE = Path("/tmp/dofbot_joint_self_test.lock")
 
@@ -168,6 +172,39 @@ def verify_angle(arm, joint_id, expected):
     )
 
 
+def move_joint_and_verify(arm, joint_id, target, duration_ms):
+    """Send a joint command again when the controller drops a write."""
+    last_error = None
+    for attempt in range(1, MOVE_ATTEMPTS + 1):
+        if stop_requested:
+            raise StopRequested("已取消剩余关节测试")
+
+        # Give the controller time to leave feedback-read mode before writing.
+        time.sleep(MOVE_COMMAND_GAP)
+        if attempt > 1:
+            log(
+                f"[补发] {joint_id}号关节目标={target}°，"
+                f"第{attempt}/{MOVE_ATTEMPTS}次发送"
+            )
+        arm.Arm_serial_servo_write(joint_id, target, duration_ms)
+        if not interruptible_wait(duration_ms / 1000.0 + MOVE_SETTLE_MARGIN):
+            raise StopRequested("当前关节动作已中断")
+
+        try:
+            verify_angle(arm, joint_id, target)
+            return
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt < MOVE_ATTEMPTS:
+                log(f"[重试] {exc}；准备补发动作指令")
+                if not interruptible_wait(MOVE_RETRY_DELAY):
+                    raise StopRequested("当前关节重试已中断")
+
+    raise RuntimeError(
+        f"{joint_id}号关节连续{MOVE_ATTEMPTS}次动作未到位: {last_error}"
+    )
+
+
 def move_home(arm, reason):
     log(f"[归位] {reason}，移动到竖直姿态 {HOME_POSE}")
     arm.Arm_serial_servo_write6(*HOME_POSE, HOME_MOVE_MS)
@@ -216,16 +253,10 @@ def run_self_test():
                 raise StopRequested("已取消剩余关节测试")
 
             log(f"[测试 {index}/6] {index}号关节: {home_angle}° -> {test_angle}°")
-            arm.Arm_serial_servo_write(index, test_angle, JOINT_MOVE_MS)
-            if not interruptible_wait(JOINT_MOVE_MS / 1000.0 + 0.3):
-                raise StopRequested("当前关节测试已中断")
-            verify_angle(arm, index, test_angle)
+            move_joint_and_verify(arm, index, test_angle, JOINT_MOVE_MS)
 
             log(f"[测试 {index}/6] {index}号关节返回 {home_angle}°")
-            arm.Arm_serial_servo_write(index, home_angle, JOINT_MOVE_MS)
-            if not interruptible_wait(JOINT_MOVE_MS / 1000.0 + 0.3):
-                raise StopRequested("当前关节返回后取消剩余测试")
-            verify_angle(arm, index, home_angle)
+            move_joint_and_verify(arm, index, home_angle, JOINT_MOVE_MS)
 
         test_completed = True
         log("[结果] 6个关节通信、运动及角度读回检查全部通过")
