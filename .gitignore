@@ -39,7 +39,9 @@ Thumbs.db
 *.uvguix.*
 *.dep
 *.sct
-MDK-ARM/RTE/
+**/MDK-ARM/RTE/
+**/MDK-ARM/DebugConfig/
+**/MDK-ARM/*.lst
 
 # Generated intermediate model. The device runtime engine and source weights
 # are retained; ONNX can be regenerated from best.pt when needed.
