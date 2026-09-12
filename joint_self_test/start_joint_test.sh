@@ -44,18 +44,20 @@ conflict_tokens=(
 
 find_processes_by_token() {
     local target=$1
-    local proc pid arg base matched
+    local proc pid arg base matched cmdline
     for proc in /proc/[0-9]*; do
         pid=${proc##*/}
         [ "$pid" = "$$" ] && continue
+        cmdline="$( { tr '\0' '\n' < "$proc/cmdline"; } 2>/dev/null)" || continue
+        [ -n "$cmdline" ] || continue
         matched=0
-        while IFS= read -r -d '' arg; do
+        while IFS= read -r arg; do
             base=${arg##*/}
             if [ "$arg" = "$target" ] || [ "$base" = "$target" ]; then
                 matched=1
                 break
             fi
-        done < "$proc/cmdline" 2>/dev/null || true
+        done <<< "$cmdline"
         [ "$matched" -eq 1 ] && printf '%s\n' "$pid"
     done
     return 0

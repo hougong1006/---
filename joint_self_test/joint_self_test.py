@@ -18,8 +18,8 @@ PING_OK = 0xDA
 ANGLE_TOLERANCE = 10
 HOME_MOVE_MS = 3000
 JOINT_MOVE_MS = 1200
-READ_ATTEMPTS = 3
-READ_RETRY_DELAY = 0.12
+READ_ATTEMPTS = 8
+READ_RETRY_DELAY = 0.08
 VERIFY_ATTEMPTS = 3
 VERIFY_RETRY_DELAY = 0.25
 PID_FILE = Path("/tmp/dofbot_joint_self_test.pid")
@@ -111,16 +111,31 @@ def remove_pid_file():
         log(f"[警告] 无法清理PID文件: {exc}")
 
 
+def raw_to_angle(joint_id, raw_value):
+    """Convert the controller's raw feedback without Arm_Lib's 0-180 clamp."""
+    if joint_id == 5:
+        return 270.0 * (raw_value - 380) / (3700 - 380)
+
+    angle = 180.0 * (raw_value - 900) / (3100 - 900)
+    if joint_id in (2, 3, 4):
+        angle = 180.0 - angle
+    return angle
+
+
 def read_angle(arm, joint_id):
     last_error = None
     for attempt in range(1, READ_ATTEMPTS + 1):
         try:
-            time.sleep(0.05)
-            value = arm.Arm_serial_servo_read(joint_id)
-            time.sleep(0.05)
-            if value is not None:
-                return float(value)
-            last_error = "返回空值"
+            arm.bus.write_byte_data(arm.addr, joint_id + 0x30, 0x00)
+            time.sleep(0.005)
+            raw_value = arm.bus.read_word_data(arm.addr, joint_id + 0x30)
+            if raw_value != 0:
+                raw_value = (
+                    ((raw_value >> 8) & 0xFF)
+                    | ((raw_value << 8) & 0xFF00)
+                )
+                return raw_to_angle(joint_id, raw_value)
+            last_error = "控制器返回0"
         except Exception as exc:
             last_error = str(exc)
         if attempt < READ_ATTEMPTS:
@@ -150,15 +165,6 @@ def verify_angle(arm, joint_id, expected):
         f"{joint_id}号关节角度校验失败: 目标={expected}°，"
         f"读回={actual:.1f}°，偏差={difference:.1f}°，"
         f"已复核{VERIFY_ATTEMPTS}次"
-    )
-    if difference > ANGLE_TOLERANCE:
-        raise RuntimeError(
-            f"{joint_id}号关节角度校验失败: 目标={expected}°, "
-            f"读回={actual:.1f}°, 偏差={difference:.1f}°"
-        )
-    log(
-        f"[通过] {joint_id}号关节目标={expected}°，"
-        f"读回={actual:.1f}°，偏差={difference:.1f}°"
     )
 
 
