@@ -36,6 +36,12 @@ typedef enum
   INDICATOR_INVALID
 } IndicatorMode;
 
+typedef struct
+{
+  uint8_t score;
+  GPIO_PinState stable_state;
+} LevelFilter;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -66,6 +72,12 @@ typedef enum
 #define RUN_CONFIRM_SAMPLES       60U  /* 运行编码连续稳定600 ms才生效 */
 #define DEFECT_CONFIRM_SAMPLES    80U  /* 缺陷编码连续稳定800 ms才报警 */
 #define OFF_CONFIRM_SAMPLES       80U  /* 双低连续稳定800 ms才全部关闭 */
+#define STARTUP_LOCK_MS           2000U
+#define STARTUP_LOW_SAMPLES       50U  /* 解锁前要求双低稳定500 ms */
+#define INPUT_FILTER_MAX          8U
+#define INPUT_FILTER_HIGH         6U   /* 输入连续约60 ms才认定为高 */
+#define INPUT_FILTER_LOW          2U   /* 输入连续约20 ms才认定为低 */
+#define MODE_HOLD_MS              400U
 
 /* USER CODE END PD */
 
@@ -81,6 +93,12 @@ typedef enum
 static IndicatorMode current_indicator_mode = INDICATOR_OFF;
 static IndicatorMode pending_indicator_mode = INDICATOR_INVALID;
 static uint16_t pending_mode_count = 0U;
+static LevelFilter conveyor_run_filter = {0U, GPIO_PIN_RESET};
+static LevelFilter defect_grab_filter = {0U, GPIO_PIN_RESET};
+static uint32_t startup_tick = 0U;
+static uint16_t startup_low_count = 0U;
+static uint8_t startup_ready = 0U;
+static uint32_t mode_hold_until = 0U;
 
 /* USER CODE END PV */
 
@@ -105,6 +123,33 @@ static void Relay_SetState(GPIO_PinState green,
   HAL_GPIO_WritePin(GPIOB, RELAY_GREEN_PIN, green);
   HAL_GPIO_WritePin(GPIOB, RELAY_RED_PIN, red);
   HAL_GPIO_WritePin(GPIOB, RELAY_BUZZER_PIN, buzzer);
+}
+
+static GPIO_PinState LevelFilter_Update(LevelFilter *filter,
+                                        GPIO_PinState raw_state)
+{
+  if (raw_state == GPIO_PIN_SET)
+  {
+    if (filter->score < INPUT_FILTER_MAX)
+    {
+      filter->score++;
+    }
+  }
+  else if (filter->score > 0U)
+  {
+    filter->score--;
+  }
+
+  if (filter->score >= INPUT_FILTER_HIGH)
+  {
+    filter->stable_state = GPIO_PIN_SET;
+  }
+  else if (filter->score <= INPUT_FILTER_LOW)
+  {
+    filter->stable_state = GPIO_PIN_RESET;
+  }
+
+  return filter->stable_state;
 }
 
 static IndicatorMode Indicator_DecodeInputs(GPIO_PinState conveyor_running,
@@ -168,19 +213,64 @@ static void Indicator_ApplyMode(IndicatorMode mode)
   }
 
   current_indicator_mode = mode;
+  mode_hold_until = HAL_GetTick() + MODE_HOLD_MS;
 }
 
 static void Indicator_Update(void)
 {
   GPIO_PinState raw_conveyor_running;
   GPIO_PinState raw_defect_grabbing;
+  GPIO_PinState conveyor_running;
+  GPIO_PinState defect_grabbing;
   IndicatorMode sampled_mode;
   uint16_t required_samples;
+  uint32_t now = HAL_GetTick();
 
   raw_conveyor_running = HAL_GPIO_ReadPin(GPIOA, CONVEYOR_RUN_INPUT_PIN);
   raw_defect_grabbing = HAL_GPIO_ReadPin(GPIOA, DEFECT_GRAB_INPUT_PIN);
-  sampled_mode = Indicator_DecodeInputs(raw_conveyor_running,
-                                        raw_defect_grabbing);
+
+  /* 上电先保持安全状态，并等待两路输入回到双低后再解锁。 */
+  if (startup_ready == 0U)
+  {
+    Relay_AllOff();
+    current_indicator_mode = INDICATOR_OFF;
+    pending_indicator_mode = INDICATOR_INVALID;
+    pending_mode_count = 0U;
+
+    if ((uint32_t)(now - startup_tick) < STARTUP_LOCK_MS)
+    {
+      return;
+    }
+
+    if ((raw_conveyor_running == GPIO_PIN_RESET) &&
+        (raw_defect_grabbing == GPIO_PIN_RESET))
+    {
+      if (startup_low_count < STARTUP_LOW_SAMPLES)
+      {
+        startup_low_count++;
+      }
+      if (startup_low_count >= STARTUP_LOW_SAMPLES)
+      {
+        startup_ready = 1U;
+      }
+    }
+    else
+    {
+      startup_low_count = 0U;
+    }
+    return;
+  }
+
+  conveyor_running = LevelFilter_Update(&conveyor_run_filter,
+                                        raw_conveyor_running);
+  defect_grabbing = LevelFilter_Update(&defect_grab_filter,
+                                       raw_defect_grabbing);
+  sampled_mode = Indicator_DecodeInputs(conveyor_running, defect_grabbing);
+
+  if ((int32_t)(now - mode_hold_until) < 0)
+  {
+    return;
+  }
 
   /* 无效双高或任何采样跳变都会取消本轮确认，并保持现有输出。 */
   if (sampled_mode == INDICATOR_INVALID)
@@ -253,6 +343,7 @@ int main(void)
 
   /* 上电安全状态：绿灯、红灯和蜂鸣器全部关闭。 */
   Relay_AllOff();
+  startup_tick = HAL_GetTick();
 
   /* USER CODE END 2 */
 

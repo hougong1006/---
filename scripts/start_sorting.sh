@@ -68,7 +68,7 @@ echo ""
 
 # 在启动ROS节点前先向传送带控制板发送启动脉冲。
 # 可视化界面的一键启动和命令行启动都调用本脚本，因此统一在这里处理。
-echo "[启动联动] 发送传送带启动信号 (BCM13, 50 ms)..."
+echo "[启动联动] 发送传送带启动信号 (BCM13, 150 ms)..."
 if python3 - <<'PY'
 import time
 import Jetson.GPIO as GPIO
@@ -79,7 +79,7 @@ GPIO.setmode(GPIO.BCM)
 try:
     GPIO.setup(BCM_START, GPIO.OUT, initial=GPIO.LOW)
     GPIO.output(BCM_START, GPIO.HIGH)
-    time.sleep(0.05)
+    time.sleep(0.15)
     GPIO.output(BCM_START, GPIO.LOW)
 finally:
     GPIO.cleanup(BCM_START)

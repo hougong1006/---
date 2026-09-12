@@ -43,18 +43,150 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-volatile uint32_t last_exti0_tick = 0;
-volatile uint32_t last_exti1_tick = 0;
-#define DEBOUNCE_MS 300
+#define INPUT_SAMPLE_MS          10U
+#define STARTUP_LOCK_MS          2000U
+#define HIGH_CONFIRM_SAMPLES    6U   /* 约60 ms高电平才认定有效 */
+#define LOW_REARM_SAMPLES       12U  /* 约120 ms低电平后才重新使能 */
+#define COMMAND_LOCKOUT_MS      400U
+
+typedef struct
+{
+  uint8_t high_samples;
+  uint8_t low_samples;
+  uint8_t armed;
+} PulseInputFilter;
+
+static PulseInputFilter stop_filter = {0U, 0U, 0U};
+static PulseInputFilter start_filter = {0U, 0U, 0U};
+static uint32_t last_sample_tick = 0U;
+static uint32_t startup_tick = 0U;
+static uint32_t command_lockout_tick = 0U;
+static uint16_t startup_low_samples = 0U;
+static uint8_t startup_ready = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static uint8_t PulseInput_Update(PulseInputFilter *filter,
+                                 GPIO_PinState raw_level);
+static void ConveyorInputs_Process(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static uint8_t PulseInput_Update(PulseInputFilter *filter,
+                                 GPIO_PinState raw_level)
+{
+  if (raw_level == GPIO_PIN_SET)
+  {
+    filter->low_samples = 0U;
+
+    if (filter->armed == 0U)
+    {
+      return 0U;
+    }
+
+    if (filter->high_samples < HIGH_CONFIRM_SAMPLES)
+    {
+      filter->high_samples++;
+    }
+
+    if (filter->high_samples >= HIGH_CONFIRM_SAMPLES)
+    {
+      filter->high_samples = 0U;
+      filter->armed = 0U;
+      return 1U;
+    }
+  }
+  else
+  {
+    filter->high_samples = 0U;
+
+    if (filter->low_samples < LOW_REARM_SAMPLES)
+    {
+      filter->low_samples++;
+    }
+
+    if (filter->low_samples >= LOW_REARM_SAMPLES)
+    {
+      filter->low_samples = 0U;
+      filter->armed = 1U;
+    }
+  }
+
+  return 0U;
+}
+
+static void ConveyorInputs_Process(void)
+{
+  uint32_t now = HAL_GetTick();
+  GPIO_PinState raw_stop;
+  GPIO_PinState raw_start;
+  uint8_t stop_event;
+  uint8_t start_event;
+
+  if ((uint32_t)(now - last_sample_tick) < INPUT_SAMPLE_MS)
+  {
+    return;
+  }
+  last_sample_tick = now;
+
+  raw_stop = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
+  raw_start = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1);
+
+  /* 上电期间以及输入未回到双低前，强制保持停止。 */
+  if (startup_ready == 0U)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    if ((uint32_t)(now - startup_tick) < STARTUP_LOCK_MS)
+    {
+      return;
+    }
+
+    if ((raw_stop == GPIO_PIN_RESET) && (raw_start == GPIO_PIN_RESET))
+    {
+      if (startup_low_samples < LOW_REARM_SAMPLES)
+      {
+        startup_low_samples++;
+      }
+      if (startup_low_samples >= LOW_REARM_SAMPLES)
+      {
+        startup_ready = 1U;
+        stop_filter.armed = 1U;
+        start_filter.armed = 1U;
+      }
+    }
+    else
+    {
+      startup_low_samples = 0U;
+    }
+    return;
+  }
+
+  if ((uint32_t)(now - command_lockout_tick) < COMMAND_LOCKOUT_MS)
+  {
+    return;
+  }
+
+  stop_event = PulseInput_Update(&stop_filter, raw_stop);
+  start_event = PulseInput_Update(&start_filter, raw_start);
+
+  /* 停止优先；双路同时触发时保持安全状态。 */
+  if (stop_event != 0U)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    command_lockout_tick = now;
+  }
+  else if ((start_event != 0U) &&
+           (raw_stop == GPIO_PIN_RESET) &&
+           (stop_filter.armed != 0U))
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+    command_lockout_tick = now;
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -90,6 +222,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   /* Safe power-on state: keep the conveyor stopped until PA1 requests start. */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  startup_tick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -99,6 +232,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    ConveyorInputs_Process();
   }
   /* USER CODE END 3 */
 }
@@ -147,40 +281,7 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-  uint32_t now = HAL_GetTick();
-  volatile uint32_t i;
-
-  if (GPIO_Pin == GPIO_PIN_0)
-  {
-    if ((uint32_t)(now - last_exti0_tick) > DEBOUNCE_MS)
-    {
-      for (i = 0; i < 36000; i++);
-
-      if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET)
-      {
-        last_exti0_tick = now;
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
-      }
-    }
-  }
-  else if (GPIO_Pin == GPIO_PIN_1)
-  {
-    if ((uint32_t)(now - last_exti1_tick) > DEBOUNCE_MS)
-    {
-      for (i = 0; i < 36000; i++);
-
-      if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_SET)
-      {
-        last_exti1_tick = now;
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
-      }
-    }
-  }
-}
-
+/* 传送带输入由主循环采样处理，不在 EXTI 中断中执行控制动作。 */
 /* USER CODE END 4 */
 
 /**

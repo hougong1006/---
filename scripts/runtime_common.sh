@@ -199,8 +199,9 @@ runtime_configure_gpio() {
 runtime_send_gpio_pulse() {
     local channel=$1
     local action=$2
+    local pulse_ms=150
 
-    python3 - "$channel" "$action" <<'PY'
+    python3 - "$channel" "$action" "$pulse_ms" <<'PY'
 import sys
 import time
 
@@ -208,6 +209,7 @@ import Jetson.GPIO as GPIO
 
 channel = int(sys.argv[1])
 action = sys.argv[2]
+pulse_ms = int(sys.argv[3])
 configured = False
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BCM)
@@ -215,7 +217,7 @@ try:
     GPIO.setup(channel, GPIO.OUT, initial=GPIO.LOW)
     configured = True
     GPIO.output(channel, GPIO.HIGH)
-    time.sleep(0.05)
+    time.sleep(pulse_ms / 1000.0)
     GPIO.output(channel, GPIO.LOW)
 finally:
     if configured:
@@ -224,7 +226,7 @@ finally:
         finally:
             GPIO.cleanup(channel)
 
-print(f"[传送带] BCM{channel}已输出50 ms{action}脉冲")
+print(f"[传送带] BCM{channel}已输出{pulse_ms} ms{action}脉冲")
 PY
 }
 

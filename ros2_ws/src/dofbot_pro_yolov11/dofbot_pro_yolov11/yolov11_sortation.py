@@ -37,9 +37,10 @@ from Arm_Lib import Arm_Device
 # ==================== GPIO 初始化 ====================
 import Jetson.GPIO as GPIO
 
-# 传送带控制板：50 ms脉冲控制启停
+# 传送带控制板：150 ms脉冲控制启停，供控制板稳定采样确认
 BCM_STOP  = 6    # Pin 31 / GPIO11 → 传送带停止控制板
 BCM_START = 13   # Pin 33 / GPIO13 → 传送带启动控制板
+CONVEYOR_PULSE_SECONDS = 0.15
 
 # 独立报警灯控制板：持续电平表示设备状态，与传送带控制板相互独立
 BCM_RUN_STATUS = 5       # Pin 29 / GPIO01 → 报警板STM32 PA0
@@ -195,14 +196,14 @@ class Yolov11GraspNode(Node):
         print("[报警灯] 停机：GPIO01=LOW, GPIO07=LOW")
 
     def send_stop_conveyor(self):
-        """BCM6 短脉冲 → STM32 PA0(EXTI边沿触发) → 停止传送带"""
+        """BCM6 脉冲 → STM32 PA0采样确认 → 停止传送带"""
         with self.gpio_lock:
             GPIO.output(BCM_STOP, GPIO.HIGH)
-            time.sleep(0.05)
+            time.sleep(CONVEYOR_PULSE_SECONDS)
             GPIO.output(BCM_STOP, GPIO.LOW)
 
     def send_start_conveyor(self):
-        """BCM13 短脉冲 → STM32 PA1(EXTI边沿触发) → 启动传送带"""
+        """BCM13 脉冲 → STM32 PA1采样确认 → 启动传送带"""
         if not self.conveyor_start_permitted:
             print("[安全联锁] 机械臂尚未确认归位，拒绝发送传送带启动信号")
             return False
@@ -216,7 +217,7 @@ class Yolov11GraspNode(Node):
                 print("[传送带] 系统停止锁定生效，忽略启动信号")
                 return False
             GPIO.output(BCM_START, GPIO.HIGH)
-            time.sleep(0.05)
+            time.sleep(CONVEYOR_PULSE_SECONDS)
             GPIO.output(BCM_START, GPIO.LOW)
         return True
 
@@ -503,7 +504,7 @@ class Yolov11GraspNode(Node):
                 self.batch_started_at = time.monotonic()
                 print(f"[Phase1] 检测到: {self.name} ({self.cx},{self.cy}) → 立即停带！")
                 self.set_indicator_defect()
-                self.send_stop_conveyor()  # 50ms GPIO脉冲，极速
+                self.send_stop_conveyor()  # 150ms GPIO脉冲，供控制板稳定确认
                 self.conveyor_stopped = True
                 # 清除坐标，等待YOLO重新检测静止后的精确位置
                 self.cx = 0
