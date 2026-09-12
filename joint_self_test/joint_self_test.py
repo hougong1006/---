@@ -13,11 +13,15 @@ from Arm_Lib import Arm_Device
 
 
 HOME_POSE = [90, 90, 90, 0, 90, 30]
-TEST_ANGLES = [105, 105, 105, 15, 105, 45]
+TEST_ANGLES = [120, 120, 120, 30, 120, 60]
 PING_OK = 0xDA
 ANGLE_TOLERANCE = 10
 HOME_MOVE_MS = 3000
-JOINT_MOVE_MS = 800
+JOINT_MOVE_MS = 1200
+READ_ATTEMPTS = 3
+READ_RETRY_DELAY = 0.12
+VERIFY_ATTEMPTS = 3
+VERIFY_RETRY_DELAY = 0.25
 PID_FILE = Path("/tmp/dofbot_joint_self_test.pid")
 LOCK_FILE = Path("/tmp/dofbot_joint_self_test.lock")
 
@@ -108,17 +112,45 @@ def remove_pid_file():
 
 
 def read_angle(arm, joint_id):
-    time.sleep(0.05)
-    value = arm.Arm_serial_servo_read(joint_id)
-    time.sleep(0.05)
-    if value is None:
-        raise RuntimeError(f"{joint_id}号关节角度读取失败")
-    return float(value)
+    last_error = None
+    for attempt in range(1, READ_ATTEMPTS + 1):
+        try:
+            time.sleep(0.05)
+            value = arm.Arm_serial_servo_read(joint_id)
+            time.sleep(0.05)
+            if value is not None:
+                return float(value)
+            last_error = "返回空值"
+        except Exception as exc:
+            last_error = str(exc)
+        if attempt < READ_ATTEMPTS:
+            time.sleep(READ_RETRY_DELAY)
+    raise RuntimeError(
+        f"{joint_id}号关节角度读取失败（已重试{READ_ATTEMPTS}次，{last_error}）"
+    )
 
 
 def verify_angle(arm, joint_id, expected):
-    actual = read_angle(arm, joint_id)
-    difference = abs(actual - expected)
+    actual = None
+    difference = None
+    for attempt in range(1, VERIFY_ATTEMPTS + 1):
+        actual = read_angle(arm, joint_id)
+        difference = abs(actual - expected)
+        if difference <= ANGLE_TOLERANCE:
+            if attempt > 1:
+                log(f"[复核] {joint_id}号关节第{attempt}次读回后到位")
+            log(
+                f"[通过] {joint_id}号关节目标={expected}°，"
+                f"读回={actual:.1f}°，偏差={difference:.1f}°"
+            )
+            return
+        if attempt < VERIFY_ATTEMPTS:
+            time.sleep(VERIFY_RETRY_DELAY)
+    raise RuntimeError(
+        f"{joint_id}号关节角度校验失败: 目标={expected}°，"
+        f"读回={actual:.1f}°，偏差={difference:.1f}°，"
+        f"已复核{VERIFY_ATTEMPTS}次"
+    )
     if difference > ANGLE_TOLERANCE:
         raise RuntimeError(
             f"{joint_id}号关节角度校验失败: 目标={expected}°, "
