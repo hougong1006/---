@@ -186,7 +186,15 @@ def move_joint_and_verify(arm, joint_id, target, duration_ms):
                 f"[补发] {joint_id}号关节目标={target}°，"
                 f"第{attempt}/{MOVE_ATTEMPTS}次发送"
             )
-        arm.Arm_serial_servo_write(joint_id, target, duration_ms)
+        if joint_id == 6:
+            # The controller can intermittently drop reverse-direction writes
+            # to servo 6 through the single-servo register.  The six-servo
+            # command uses the same reliable path as startup/final homing.
+            target_pose = HOME_POSE.copy()
+            target_pose[5] = target
+            arm.Arm_serial_servo_write6(*target_pose, duration_ms)
+        else:
+            arm.Arm_serial_servo_write(joint_id, target, duration_ms)
         if not interruptible_wait(duration_ms / 1000.0 + MOVE_SETTLE_MARGIN):
             raise StopRequested("当前关节动作已中断")
 
