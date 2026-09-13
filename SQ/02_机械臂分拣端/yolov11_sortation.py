@@ -344,9 +344,9 @@ class Yolov11GraspNode(Node):
         print(f"[Phase2] 传送带已停，使用重检坐标夹取: {name} ({cx}, {cy}), 深度: {dist:.3f}m")
 
         try:
-            camera_location = self.pixel_to_camera_depth((cx, cy), dist)
-            PoseEndMat = np.matmul(self.EndToCamMat, self.xyz_euler_to_mat(camera_location, (0, 0, 0)))
-            EndPointMat = self.get_end_point_mat()
+
+
+
 
 
 
