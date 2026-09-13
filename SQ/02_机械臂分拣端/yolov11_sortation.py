@@ -348,10 +348,6 @@ class Yolov11GraspNode(Node):
 
 
 
-
-
-
-
             self.name = name
             print(f"[夹取] 开始夹取: {name}")
             self.grasp(pose_T)
@@ -482,14 +478,14 @@ class Yolov11GraspNode(Node):
 
     def solve_ik_joints(self, pose_T, gripper_angle):
         """Solve one Cartesian target and return a six-joint arm command."""
-        request = Kinemarics.Request()
-        request.tar_x = pose_T[0]
-        request.tar_y = pose_T[1]
-        request.tar_z = pose_T[2]
-        request.kin_name = "ik"
+
+
+
+
+
         request.roll = -1.0
 
-        future = self.client.call_async(request)
+
         # Poll instead of spinning this node from its worker thread.
         start_time = time.time()
         while not future.done():
@@ -645,6 +641,15 @@ class Yolov11GraspNode(Node):
         y = (py - cy) * depth / fy
         z = depth
         return np.array([x, y, z])
+
+    def pixel_to_base(self, cx, cy, depth):
+        """Convert a detected pixel and depth to the robot base frame."""
+        camera_location = self.pixel_to_camera_depth((cx, cy), depth)
+        camera_pose = self.xyz_euler_to_mat(camera_location, (0, 0, 0))
+        end_pose = np.matmul(self.EndToCamMat, camera_pose)
+        base_pose = np.matmul(self.get_end_point_mat(), end_pose)
+        position, _ = self.mat_to_xyz_euler(base_pose)
+        return position
 
     #通过平移向量和旋转的欧拉角得到变换矩阵
     def xyz_euler_to_mat(self,xyz, euler, degrees=False):

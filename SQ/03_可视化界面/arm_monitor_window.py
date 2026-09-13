@@ -1960,8 +1960,8 @@ class ArmMonitorWindow(QMainWindow):
         url = f'http://{host}:{self._STREAM_PORT}/'
         self._cam_worker = CameraStreamWorker(url)
         self._cam_worker.frame_signal.connect(self._on_camera_frame)
-        
-        
+        self._cam_worker.start()
+
         self.camera_label.setText(_TX['WAIT_CAM'])
         self.camera_label.setStyleSheet(
             "background-color: #1a1f2e; color: #8b95a5;"

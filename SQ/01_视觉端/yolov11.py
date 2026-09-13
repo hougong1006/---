@@ -26,7 +26,7 @@ encoding = ['16UC1', '32FC1']
 # ===== MJPEG 视频流服务（供上位机远程查看带检测框的画面） =====
 _latest_frame_jpg = None       # 最新帧的 JPEG 字节
 _frame_lock = threading.Lock()
-MJPEG_PORT = 
+MJPEG_PORT = 8765
 
 
 class _MJPEGHandler(BaseHTTPRequestHandler):
@@ -367,7 +367,7 @@ class Yolov11DetectNode(Node):
 
         # 更新 MJPEG 视频流缓冲（供上位机远程查看）
         global _latest_frame_jpg
-        _, _jpg_buf = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, ])
+        _, _jpg_buf = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         with _frame_lock:
             _latest_frame_jpg = _jpg_buf.tobytes()
 
