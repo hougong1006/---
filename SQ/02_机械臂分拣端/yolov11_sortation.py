@@ -478,11 +478,6 @@ class Yolov11GraspNode(Node):
     def solve_ik_joints(self, pose_T, gripper_angle):
         """Solve one Cartesian target and return a six-joint arm command."""
 
-
-
-        request.roll = -1.0
-
-
         # Poll instead of spinning this node from its worker thread.
         start_time = time.time()
         while not future.done():
@@ -647,6 +642,20 @@ class Yolov11GraspNode(Node):
         base_pose = np.matmul(self.get_end_point_mat(), end_pose)
         position, _ = self.mat_to_xyz_euler(base_pose)
         return position
+
+    def add_offset(self, pose_T):
+        """Apply the configured XYZ calibration offsets."""
+        target = np.asarray(pose_T, dtype=float).copy()
+        target += [self.x_offset, self.y_offset, self.z_offset]
+        return target
+
+    def request_ik(self, pose_T):
+        """Submit a KDL inverse-kinematics request."""
+        request = Kinemarics.Request()
+        request.tar_x, request.tar_y, request.tar_z = pose_T
+        request.kin_name = "ik"
+        request.roll = -1.0
+        return self.client.call_async(request)
 
     #通过平移向量和旋转的欧拉角得到变换矩阵
     def xyz_euler_to_mat(self,xyz, euler, degrees=False):
