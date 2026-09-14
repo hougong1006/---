@@ -103,7 +103,8 @@ class Yolov11GraspNode(Node):
         # Joint6: smaller angles open the gripper. Pre-close it at a safe
         # height before descending into the tray, then keep this width fixed.
         self.GRIPPER_APPROACH_ANGLE = 100.0
-        self.GRIPPER_CLOSED_ANGLE = 165.0
+        #self.GRIPPER_CLOSED_ANGLE = 165.0
+        
         self.GRIPPER_RELEASE_ANGLE = 30.0
         self.POST_GRASP_LIFT_HEIGHT = 0.07
         self.depth_bridge = CvBridge()
@@ -346,8 +347,6 @@ class Yolov11GraspNode(Node):
         try:
 
 
-
-
             self.name = name
             print(f"[夹取] 开始夹取: {name}")
             self.grasp(pose_T)
@@ -478,8 +477,6 @@ class Yolov11GraspNode(Node):
 
     def solve_ik_joints(self, pose_T, gripper_angle):
         """Solve one Cartesian target and return a six-joint arm command."""
-
-
 
 
 
