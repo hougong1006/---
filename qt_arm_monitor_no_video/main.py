@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Arm Monitor - Main Entry
+智观工业视觉分析与作业协同智能体软件 V1.0 - Main Entry
 """
 import faulthandler
 import sys
@@ -9,7 +9,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from PyQt5.QtWidgets import QApplication
-from arm_monitor_window import ArmMonitorWindow
+from arm_monitor_window import APP_NAME, APP_VERSION, APP_TITLE, ArmMonitorWindow
 
 
 _CRASH_LOG_PATH = Path(__file__).resolve().with_name('crash.log')
@@ -36,6 +36,9 @@ threading.excepthook = _write_thread_exception
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_TITLE)
+    app.setApplicationVersion(APP_VERSION)
     window = ArmMonitorWindow()
     if '--maximized' in sys.argv:
         window.showMaximized()

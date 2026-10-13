@@ -44,9 +44,13 @@ import numpy as np
 def _t(s):
     return _b64.b64decode(s).decode('utf-8')
 
+APP_NAME = '智观工业视觉分析与作业协同智能体软件'
+APP_VERSION = '1.0'
+APP_TITLE = f'{APP_NAME} V{APP_VERSION}'
+
 # All Chinese strings decoded at runtime (avoids Windows encoding issues)
 _TX = {
-    'TITLE': _t('5aOz5L2T6KGo6Z2i57y66Zm35pm66IO95YiG5ouj57O757uf5Y+v6KeG5YyW55uR5o6n5bmz5Y+w'),
+    'TITLE': APP_TITLE,
     'BTN_LAUNCH': _t('5LiA6ZSu5ZCv5Yqo'),
     'BTN_STOP_SYS': _t('5YGc5q2i57O757uf'),
     'LAUNCHING': _t('5ZCv5Yqo5Lit77yM6K+356iN5YCZLi4u'),
